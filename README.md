@@ -20,7 +20,7 @@ Requires the `claude` CLI installed and logged in (used for both usage modes bel
 ./venv/bin/python3 app.py
 ```
 
-Then open http://127.0.0.1:8420 — drag in your CV (PDF or .docx), paste a job posting URL (or the job description text if the URL can't be fetched), optionally add a photo, choose PDF or DOCX, and submit. Each request runs in an isolated `runs/<id>/` folder and shells out to `claude -p` headlessly with tool access scoped to just what the skill needs (Read/Write/WebFetch/Agent and the two render scripts) — it does not have general Bash access, which matters since job posting content is untrusted external text.
+Then open http://127.0.0.1:8420 — drag in your CV (PDF or .docx), paste a job posting URL (or the job description text if the URL can't be fetched), optionally add a photo, choose PDF or DOCX, optionally give the output file a custom name (defaults to `tailored_cv` if left blank; unsafe characters are stripped server-side), and submit. Each request runs in an isolated `runs/<id>/` folder and shells out to `claude -p` headlessly with tool access scoped to just what the skill needs (Read/Write/WebFetch/Agent and the two render scripts) — it does not have general Bash access, which matters since job posting content is untrusted external text.
 
 Only reachable from your own machine (`127.0.0.1`) — it's not a hosted/multi-tenant service. If you want to use it from another device, you'd need to run it there too, with that machine's own Claude Code login.
 
