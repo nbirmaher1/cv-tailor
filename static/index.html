@@ -1,0 +1,271 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cv-tailor</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
+    max-width: 560px;
+    margin: 48px auto;
+    padding: 0 20px;
+    color: #1a1a1a;
+    background: #fafafa;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { color: #eee; background: #16161a; }
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  p.sub { color: #777; margin-top: 0; font-size: 14px; }
+  label { display: block; font-weight: 600; font-size: 13px; margin: 20px 0 6px; }
+  .dropzone {
+    border: 2px dashed #999;
+    border-radius: 10px;
+    padding: 28px;
+    text-align: center;
+    cursor: pointer;
+    font-size: 14px;
+    color: #666;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .dropzone.dragover { border-color: #3366ff; background: rgba(51,102,255,0.06); }
+  .dropzone.has-file { border-style: solid; border-color: #2a2; color: inherit; }
+  input[type=text], textarea {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px;
+    border-radius: 8px;
+    border: 1px solid #ccc;
+    font-size: 14px;
+    font-family: inherit;
+    background: white;
+    color: inherit;
+  }
+  @media (prefers-color-scheme: dark) {
+    input[type=text], textarea { background: #222; border-color: #444; }
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  button {
+    margin-top: 24px;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 8px;
+    background: #3366ff;
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { background: #99aadd; cursor: default; }
+  #status { margin-top: 16px; font-size: 14px; }
+  #status.error { color: #c0392b; white-space: pre-wrap; }
+  #status.ok { color: #1f8b3a; }
+  a.download {
+    display: inline-block;
+    margin-top: 8px;
+    color: #3366ff;
+    font-weight: 600;
+  }
+  #file-input, #photo-input { display: none; }
+  .dropzone.small { padding: 16px; }
+  .format-row { display: flex; gap: 16px; margin-top: 6px; }
+  .format-row label { display: flex; align-items: center; gap: 6px; font-weight: normal; margin: 0; font-size: 14px; }
+  .optional-tag { font-weight: normal; color: #888; }
+  #progress-wrap { display: none; margin-top: 20px; }
+  #progress-track {
+    width: 100%;
+    height: 8px;
+    border-radius: 4px;
+    background: #e2e2e2;
+    overflow: hidden;
+  }
+  @media (prefers-color-scheme: dark) {
+    #progress-track { background: #333; }
+  }
+  #progress-bar {
+    height: 100%;
+    width: 3%;
+    background: #3366ff;
+    border-radius: 4px;
+    transition: width 0.4s ease;
+  }
+  #progress-message { margin-top: 8px; font-size: 14px; color: #555; }
+  @media (prefers-color-scheme: dark) {
+    #progress-message { color: #aaa; }
+  }
+</style>
+</head>
+<body>
+
+  <h1>cv-tailor</h1>
+  <p class="sub">Drop your CV, paste a job posting, get a tailored PDF back. Runs locally through your own Claude Code login &mdash; no data leaves your machine except the CV parsing/job-fetch/tailoring steps Claude Code itself performs.</p>
+
+  <form id="form">
+    <label>CV file (PDF or .docx)</label>
+    <div class="dropzone" id="dropzone">Drag &amp; drop your CV here, or click to choose a file</div>
+    <input type="file" id="file-input" accept=".pdf,.docx">
+
+    <label>Job posting URL</label>
+    <input type="text" id="job-url" placeholder="https://www.linkedin.com/jobs/view/...">
+
+    <label>Or paste the job description text (used if the URL can't be fetched)</label>
+    <textarea id="job-text" placeholder="Paste the full job description here"></textarea>
+
+    <label>Photo <span class="optional-tag">(optional)</span></label>
+    <div class="dropzone small" id="photo-dropzone">Drag &amp; drop a photo here, or click to choose one</div>
+    <input type="file" id="photo-input" accept="image/*">
+
+    <label>Output format</label>
+    <div class="format-row">
+      <label><input type="radio" name="format" value="pdf" checked> PDF</label>
+      <label><input type="radio" name="format" value="docx"> DOCX (Word)</label>
+    </div>
+
+    <button type="submit" id="submit-btn">Tailor my CV</button>
+  </form>
+
+  <div id="progress-wrap">
+    <div id="progress-track"><div id="progress-bar"></div></div>
+    <div id="progress-message">Starting…</div>
+  </div>
+
+  <div id="status"></div>
+
+<script>
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('file-input');
+const photoDropzone = document.getElementById('photo-dropzone');
+const photoInput = document.getElementById('photo-input');
+const form = document.getElementById('form');
+const submitBtn = document.getElementById('submit-btn');
+const statusEl = document.getElementById('status');
+const progressWrap = document.getElementById('progress-wrap');
+const progressBar = document.getElementById('progress-bar');
+const progressMessage = document.getElementById('progress-message');
+let selectedFile = null;
+let selectedPhoto = null;
+
+function wireDropzone(zoneEl, inputEl, onSelect, emptyText) {
+  zoneEl.addEventListener('click', () => inputEl.click());
+  inputEl.addEventListener('change', () => onSelect(inputEl.files[0] || null));
+  ['dragenter', 'dragover'].forEach(evt =>
+    zoneEl.addEventListener(evt, e => { e.preventDefault(); zoneEl.classList.add('dragover'); })
+  );
+  ['dragleave', 'drop'].forEach(evt =>
+    zoneEl.addEventListener(evt, e => { e.preventDefault(); zoneEl.classList.remove('dragover'); })
+  );
+  zoneEl.addEventListener('drop', e => {
+    const file = e.dataTransfer.files[0];
+    if (file) onSelect(file);
+  });
+}
+
+wireDropzone(dropzone, fileInput, (file) => {
+  selectedFile = file;
+  dropzone.textContent = file ? `Selected: ${file.name}` : 'Drag & drop your CV here, or click to choose a file';
+  dropzone.classList.toggle('has-file', !!file);
+});
+
+wireDropzone(photoDropzone, photoInput, (file) => {
+  selectedPhoto = file;
+  photoDropzone.textContent = file ? `Selected: ${file.name}` : 'Drag & drop a photo here, or click to choose one';
+  photoDropzone.classList.toggle('has-file', !!file);
+});
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  statusEl.className = '';
+  statusEl.textContent = '';
+
+  if (!selectedFile) {
+    statusEl.className = 'error';
+    statusEl.textContent = 'Please choose a CV file first.';
+    return;
+  }
+  const jobUrl = document.getElementById('job-url').value.trim();
+  const jobText = document.getElementById('job-text').value.trim();
+  if (!jobUrl && !jobText) {
+    statusEl.className = 'error';
+    statusEl.textContent = 'Please provide a job posting URL or paste the job description.';
+    return;
+  }
+
+  const format = document.querySelector('input[name=format]:checked').value;
+
+  const formData = new FormData();
+  formData.append('cv_file', selectedFile);
+  formData.append('job_url', jobUrl);
+  formData.append('job_text', jobText);
+  formData.append('output_format', format);
+  if (selectedPhoto) formData.append('photo', selectedPhoto);
+
+  submitBtn.disabled = true;
+  progressWrap.style.display = 'block';
+  progressBar.style.width = '3%';
+  progressMessage.textContent = 'Starting…';
+
+  try {
+    const startResp = await fetch('/api/tailor/start', { method: 'POST', body: formData });
+    if (!startResp.ok) {
+      let detail = 'Request failed.';
+      try { detail = (await startResp.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    const { run_id } = await startResp.json();
+    await pollUntilDone(run_id);
+
+    const resultResp = await fetch(`/api/tailor/${run_id}/result`);
+    if (!resultResp.ok) {
+      let detail = 'Tailoring failed.';
+      try { detail = (await resultResp.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    const blob = await resultResp.blob();
+    const url = URL.createObjectURL(blob);
+    const filename = `tailored_cv.${format}`;
+    statusEl.className = 'ok';
+    statusEl.innerHTML = 'Done! ';
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.className = 'download';
+    link.textContent = `Download ${filename}`;
+    statusEl.appendChild(link);
+    link.click();
+  } catch (err) {
+    statusEl.className = 'error';
+    statusEl.textContent = err.message || ('Network error: ' + err);
+  } finally {
+    submitBtn.disabled = false;
+    progressWrap.style.display = 'none';
+  }
+});
+
+function pollUntilDone(runId) {
+  return new Promise((resolve, reject) => {
+    const interval = setInterval(async () => {
+      try {
+        const resp = await fetch(`/api/tailor/${runId}/status`);
+        if (!resp.ok) throw new Error('Lost track of the tailoring job.');
+        const s = await resp.json();
+        progressBar.style.width = `${s.percent}%`;
+        progressMessage.textContent = s.step;
+        if (s.done) {
+          clearInterval(interval);
+          if (s.error) reject(new Error(s.error));
+          else resolve();
+        }
+      } catch (err) {
+        clearInterval(interval);
+        reject(err);
+      }
+    }, 800);
+  });
+}
+</script>
+
+</body>
+</html>

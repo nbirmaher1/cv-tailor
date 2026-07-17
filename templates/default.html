@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CV</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    color: #222;
+    margin: 0;
+    padding: 32px 48px;
+    font-size: 10.5pt;
+    line-height: 1.4;
+  }
+  h1 { font-size: 22pt; margin: 0 0 2px 0; font-weight: 700; }
+  .title { font-size: 11pt; color: #555; margin-bottom: 6px; }
+  .contact { font-size: 9pt; color: #555; margin-bottom: 14px; }
+  .contact span:not(:last-child)::after { content: "\00a0\00b7\00a0"; }
+  h2 {
+    font-size: 11.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1.5px solid #222;
+    padding-bottom: 3px;
+    margin: 12px 0 6px 0;
+  }
+  section:first-of-type h2 { margin-top: 0; }
+  .entry { margin-bottom: 8px; }
+  .entry-header { display: flex; justify-content: space-between; font-weight: 600; }
+  .entry-subheader { display: flex; justify-content: space-between; font-style: italic; color: #444; font-size: 9.5pt; margin-bottom: 4px; }
+  ul { margin: 4px 0 0 0; padding-left: 18px; }
+  li { margin-bottom: 2px; }
+  .skills-list { margin: 0; }
+  .skills-list span:not(:last-child)::after { content: "\00a0\2022\00a0"; }
+  .skill-cat { font-weight: 600; }
+  .skill-group { margin: 0 0 4px 0; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+  .header-text { flex: 1; }
+  .photo { width: 90px; height: 90px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+  <!-- If no photo was provided, drop the "header" wrapper/.photo img entirely and just put the h1/.title/.contact directly in <body> as before -- don't leave an empty/broken <img>. -->
+  <div class="header">
+    <div class="header-text">
+      <h1>{{FULL_NAME}}</h1>
+      <div class="title">{{TARGET_TITLE}}</div>
+      <div class="contact">
+        <span>{{EMAIL}}</span><span>{{PHONE}}</span><span>{{LOCATION}}</span><span>{{LINKS}}</span>
+      </div>
+    </div>
+    <img class="photo" src="{{PHOTO_PATH}}" alt="">
+  </div>
+
+  <section>
+    <h2>Summary</h2>
+    <p>{{SUMMARY}}</p>
+  </section>
+
+  <section>
+    <h2>Experience</h2>
+    <!-- Repeat this block per job, most recent first -->
+    <div class="entry">
+      <div class="entry-header"><span>{{JOB_TITLE}}</span><span>{{DATES}}</span></div>
+      <div class="entry-subheader"><span>{{COMPANY}}</span><span>{{JOB_LOCATION}}</span></div>
+      <ul>
+        <li>{{BULLET}}</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>Education</h2>
+    <div class="entry">
+      <div class="entry-header"><span>{{DEGREE}}</span><span>{{EDU_DATES}}</span></div>
+      <div class="entry-subheader"><span>{{SCHOOL}}</span><span>{{EDU_LOCATION}}</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Skills</h2>
+    <!-- If the source CV groups skills into labeled categories (e.g. "Analysis & Visualization", "Big Data & Engineering"), repeat this line per category. If it doesn't, drop the {{CATEGORY}} label and just use one skills-list line. -->
+    <p class="skill-group"><span class="skill-cat">{{CATEGORY}}:</span> {{SKILL, SKILL, SKILL}}</p>
+  </section>
+
+  <!-- Only include this section if the source CV has a distinct Languages section/subsection. Keep any other distinct source sections (certifications, projects, publications, etc.) as their own separate sections too -- never fold a distinct section into Skills or another section. -->
+  <section>
+    <h2>Languages</h2>
+    <p class="skills-list"><span>{{LANGUAGE}}</span></p>
+  </section>
+
+</body>
+</html>

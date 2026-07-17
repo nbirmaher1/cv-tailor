@@ -1,0 +1,9 @@
+venv/
+output/*.pdf
+output/*.html
+output/*.docx
+output/*.json
+runs/
+__pycache__/
+*.pyc
+.DS_Store
