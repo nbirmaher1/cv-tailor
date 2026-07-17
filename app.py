@@ -15,6 +15,7 @@ the frontend can poll for a live progress bar instead of staring at a static
 "please wait" message.
 """
 import json
+import re
 import shutil
 import subprocess
 import threading
@@ -46,8 +47,17 @@ CLAUDE_TIMEOUT_SECONDS = 480
 
 app = FastAPI()
 
-# run_id -> {"step": str, "percent": int, "done": bool, "error": str|None, "output_file": Path|None, "output_format": str}
+# run_id -> {"step": str, "percent": int, "done": bool, "error": str|None, "output_file": Path|None,
+#            "output_format": str, "download_name": str}
 RUNS: dict[str, dict] = {}
+
+
+def _sanitize_filename(name: str) -> str:
+    name = name.strip()
+    if not name:
+        return "tailored_cv"
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "", name).strip().strip(".")
+    return name[:100] or "tailored_cv"
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -61,11 +71,13 @@ async def start_tailor(
     job_url: str = Form(default=""),
     job_text: str = Form(default=""),
     output_format: str = Form(default="pdf"),
+    filename: str = Form(default=""),
     photo: Optional[UploadFile] = File(default=None),
 ):
     job_url = job_url.strip()
     job_text = job_text.strip()
     output_format = output_format.strip().lower()
+    download_name = _sanitize_filename(filename)
     if not job_url and not job_text:
         raise HTTPException(400, "Provide a job posting URL or pasted job description text.")
     if output_format not in ("pdf", "docx"):
@@ -114,6 +126,7 @@ explanation to {run_dir / 'error.txt'} instead of an output file, and stop."""
         "error": None,
         "output_file": output_file,
         "output_format": output_format,
+        "download_name": download_name,
     }
 
     thread = threading.Thread(target=_run_claude, args=(run_id, prompt, run_dir, output_file), daemon=True)
@@ -142,7 +155,7 @@ def tailor_result(run_id: str):
     output_format = run["output_format"]
     media_type = "application/pdf" if output_format == "pdf" else \
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    return FileResponse(run["output_file"], filename=f"tailored_cv.{output_format}", media_type=media_type)
+    return FileResponse(run["output_file"], filename=f"{run['download_name']}.{output_format}", media_type=media_type)
 
 
 # Ordered so later matches only apply once earlier ones have already been seen once each,

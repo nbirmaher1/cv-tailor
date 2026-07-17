@@ -74,6 +74,7 @@
   .format-row { display: flex; gap: 16px; margin-top: 6px; }
   .format-row label { display: flex; align-items: center; gap: 6px; font-weight: normal; margin: 0; font-size: 14px; }
   .optional-tag { font-weight: normal; color: #888; }
+  .hint { font-weight: normal; color: #888; font-size: 12px; margin: 4px 0 0; }
   #progress-wrap { display: none; margin-top: 20px; }
   #progress-track {
     width: 100%;
@@ -123,6 +124,10 @@
       <label><input type="radio" name="format" value="pdf" checked> PDF</label>
       <label><input type="radio" name="format" value="docx"> DOCX (Word)</label>
     </div>
+
+    <label>File name <span class="optional-tag">(optional)</span></label>
+    <input type="text" id="file-name" placeholder="e.g. Nathan_Birmaher_Acme_CV">
+    <p class="hint">If left blank, the file will be named "tailored_cv".</p>
 
     <button type="submit" id="submit-btn">Tailor my CV</button>
   </form>
@@ -194,12 +199,14 @@ form.addEventListener('submit', async (e) => {
   }
 
   const format = document.querySelector('input[name=format]:checked').value;
+  const customFilename = document.getElementById('file-name').value.trim();
 
   const formData = new FormData();
   formData.append('cv_file', selectedFile);
   formData.append('job_url', jobUrl);
   formData.append('job_text', jobText);
   formData.append('output_format', format);
+  formData.append('filename', customFilename);
   if (selectedPhoto) formData.append('photo', selectedPhoto);
 
   submitBtn.disabled = true;
@@ -225,7 +232,7 @@ form.addEventListener('submit', async (e) => {
     }
     const blob = await resultResp.blob();
     const url = URL.createObjectURL(blob);
-    const filename = `tailored_cv.${format}`;
+    const filename = `${customFilename || 'tailored_cv'}.${format}`;
     statusEl.className = 'ok';
     statusEl.innerHTML = 'Done! ';
     const link = document.createElement('a');
