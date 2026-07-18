@@ -129,6 +129,10 @@
     <input type="text" id="file-name" placeholder="e.g. Nathan_Birmaher_Acme_CV">
     <p class="hint">If left blank, the file will be named "tailored_cv".</p>
 
+    <label>Additional comments <span class="optional-tag">(optional)</span></label>
+    <textarea id="notes" placeholder="Anything not in your CV that should be reflected — e.g. &quot;relocating to Amsterdam, no visa sponsorship needed&quot;, an extra detail about a role, or an updated phone number."></textarea>
+    <p class="hint">Applied directly to the tailored CV — e.g. updates contact/location fields or adds the specifics you call out. Won't invent unrelated experience.</p>
+
     <button type="submit" id="submit-btn">Tailor my CV</button>
   </form>
 
@@ -200,6 +204,7 @@ form.addEventListener('submit', async (e) => {
 
   const format = document.querySelector('input[name=format]:checked').value;
   const customFilename = document.getElementById('file-name').value.trim();
+  const notes = document.getElementById('notes').value.trim();
 
   const formData = new FormData();
   formData.append('cv_file', selectedFile);
@@ -207,6 +212,7 @@ form.addEventListener('submit', async (e) => {
   formData.append('job_text', jobText);
   formData.append('output_format', format);
   formData.append('filename', customFilename);
+  formData.append('notes', notes);
   if (selectedPhoto) formData.append('photo', selectedPhoto);
 
   submitBtn.disabled = true;

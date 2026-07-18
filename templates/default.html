@@ -10,13 +10,13 @@
     font-family: "Helvetica Neue", Arial, sans-serif;
     color: #222;
     margin: 0;
-    padding: 32px 48px;
+    padding: 26px 48px;
     font-size: 10.5pt;
-    line-height: 1.4;
+    line-height: 1.35;
   }
   h1 { font-size: 22pt; margin: 0 0 2px 0; font-weight: 700; }
   .title { font-size: 11pt; color: #555; margin-bottom: 6px; }
-  .contact { font-size: 9pt; color: #555; margin-bottom: 14px; }
+  .contact { font-size: 9pt; color: #555; margin-bottom: 12px; }
   .contact span:not(:last-child)::after { content: "\00a0\00b7\00a0"; }
   h2 {
     font-size: 11.5pt;
@@ -24,10 +24,10 @@
     letter-spacing: 0.05em;
     border-bottom: 1.5px solid #222;
     padding-bottom: 3px;
-    margin: 12px 0 6px 0;
+    margin: 9px 0 5px 0;
   }
   section:first-of-type h2 { margin-top: 0; }
-  .entry { margin-bottom: 8px; }
+  .entry { margin-bottom: 6px; }
   .entry-header { display: flex; justify-content: space-between; font-weight: 600; }
   .entry-subheader { display: flex; justify-content: space-between; font-style: italic; color: #444; font-size: 9.5pt; margin-bottom: 4px; }
   ul { margin: 4px 0 0 0; padding-left: 18px; }
@@ -36,6 +36,7 @@
   .skills-list span:not(:last-child)::after { content: "\00a0\2022\00a0"; }
   .skill-cat { font-weight: 600; }
   .skill-group { margin: 0 0 4px 0; }
+  section { break-inside: avoid-page; }
   .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
   .header-text { flex: 1; }
   .photo { width: 90px; height: 90px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
@@ -48,8 +49,9 @@
     <div class="header-text">
       <h1>{{FULL_NAME}}</h1>
       <div class="title">{{TARGET_TITLE}}</div>
+      <!-- Drop any span whose value is empty (phone/links/work-authorization are all optional) rather than leaving a stray separator. -->
       <div class="contact">
-        <span>{{EMAIL}}</span><span>{{PHONE}}</span><span>{{LOCATION}}</span><span>{{LINKS}}</span>
+        <span>{{EMAIL}}</span><span>{{PHONE}}</span><span>{{LOCATION}}</span><span>{{LINKS}}</span><span>{{WORK_AUTHORIZATION}}</span>
       </div>
     </div>
     <img class="photo" src="{{PHOTO_PATH}}" alt="">

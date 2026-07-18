@@ -72,11 +72,13 @@ async def start_tailor(
     job_text: str = Form(default=""),
     output_format: str = Form(default="pdf"),
     filename: str = Form(default=""),
+    notes: str = Form(default=""),
     photo: Optional[UploadFile] = File(default=None),
 ):
     job_url = job_url.strip()
     job_text = job_text.strip()
     output_format = output_format.strip().lower()
+    notes = notes.strip()
     download_name = _sanitize_filename(filename)
     if not job_url and not job_text:
         raise HTTPException(400, "Provide a job posting URL or pasted job description text.")
@@ -102,12 +104,19 @@ async def start_tailor(
 
     output_file = run_dir / f"output.{output_format}"
     job_line = f"Job posting URL: {job_url}" if job_url else f"Job description text:\n{job_text}"
+    notes_line = (
+        f"Additional notes/comments from the candidate (apply these to the CV content itself per "
+        f"the skill's step 3 — e.g. update contact/location fields or add the detail somewhere "
+        f"visible in the output, not just as background context):\n{notes}"
+        if notes else ""
+    )
 
     prompt = f"""Use the tailor-cv skill's process to tailor this CV to this job posting.
 
 CV file: {cv_path}
 {job_line}
 {photo_line}
+{notes_line}
 Output format: {output_format}
 
 Follow the skill's steps exactly (extract CV into the canonical JSON content record, get job

@@ -4,7 +4,7 @@
 JSON schema (all fields except full_name/summary optional/omittable):
 {
   "full_name": str, "target_title": str, "email": str, "phone": str,
-  "location": str, "links": str, "photo_path": str|null,
+  "location": str, "links": str, "work_authorization": str, "photo_path": str|null,
   "summary": str,
   "experience": [{"title": str, "company": str, "location": str, "dates": str, "bullets": [str]}],
   "education": [{"degree": str, "school": str, "location": str, "dates": str}],
@@ -62,7 +62,7 @@ def build(data, output_path):
         section.top_margin = Inches(0.6)
         section.bottom_margin = Inches(0.6)
 
-    contact_bits = [b for b in [data.get("email"), data.get("phone"), data.get("location"), data.get("links")] if b]
+    contact_bits = [b for b in [data.get("email"), data.get("phone"), data.get("location"), data.get("links"), data.get("work_authorization")] if b]
     contact_line = "  |  ".join(contact_bits)
 
     photo_path = data.get("photo_path")
