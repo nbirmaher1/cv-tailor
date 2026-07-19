@@ -19,7 +19,6 @@ import re
 import shutil
 import subprocess
 import threading
-import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -35,15 +34,17 @@ VENV_PY = PROJECT_ROOT / "venv" / "bin" / "python3"
 EXTRACT_SCRIPT = PROJECT_ROOT / "scripts" / "extract_docx.py"
 RENDER_PDF_SCRIPT = PROJECT_ROOT / "scripts" / "render_pdf.py"
 RENDER_DOCX_SCRIPT = PROJECT_ROOT / "scripts" / "render_docx.py"
+DOCX_STATS_SCRIPT = PROJECT_ROOT / "scripts" / "docx_stats.py"
 
 ALLOWED_TOOLS = (
     "Read Write WebFetch Agent "
     f'Bash({VENV_PY} {EXTRACT_SCRIPT} *) '
     f'Bash({VENV_PY} {RENDER_PDF_SCRIPT} *) '
-    f'Bash({VENV_PY} {RENDER_DOCX_SCRIPT} *)'
+    f'Bash({VENV_PY} {RENDER_DOCX_SCRIPT} *) '
+    f'Bash({VENV_PY} {DOCX_STATS_SCRIPT} *)'
 )
 
-CLAUDE_TIMEOUT_SECONDS = 480
+CLAUDE_TIMEOUT_SECONDS = 720
 
 app = FastAPI()
 
@@ -206,14 +207,14 @@ def _run_claude(run_id: str, prompt: str, run_dir: Path, output_file: Path):
         RUNS[run_id].update(done=True, error="The 'claude' CLI was not found on PATH.")
         return
 
-    start_time = time.time()
+    # `for line in proc.stdout` blocks whenever the subprocess goes quiet (e.g. a hung
+    # nested API call), so a timeout check inside the loop body never fires during that
+    # silence. A watchdog timer kills the process on a wall-clock deadline regardless.
+    watchdog = threading.Timer(CLAUDE_TIMEOUT_SECONDS, proc.kill)
+    watchdog.start()
     for line in proc.stdout:
         tail_output.append(line)
         tail_output[:] = tail_output[-200:]
-
-        if time.time() - start_time > CLAUDE_TIMEOUT_SECONDS:
-            proc.kill()
-            break
 
         try:
             event = json.loads(line)
@@ -241,6 +242,7 @@ def _run_claude(run_id: str, prompt: str, run_dir: Path, output_file: Path):
                     if 42 > RUNS[run_id]["percent"]:
                         RUNS[run_id].update(step="Tailoring your content to the role…", percent=42)
 
+    watchdog.cancel()
     try:
         proc.wait(timeout=30)
     except subprocess.TimeoutExpired:

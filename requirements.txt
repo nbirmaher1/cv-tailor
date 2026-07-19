@@ -3,3 +3,4 @@ python-docx
 fastapi
 uvicorn
 python-multipart
+pypdf
