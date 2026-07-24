@@ -48,3 +48,14 @@ then give it your CV file, a job posting URL or pasted text, and optionally a ph
 ## Customizing the look
 
 Edit `templates/default.html` (plain HTML/CSS) for the PDF layout, or `scripts/render_docx.py` for the DOCX layout.
+
+## Running tests
+
+```
+./venv/bin/pip install -r requirements-dev.txt
+./venv/bin/pytest
+```
+
+Covers the deterministic Python code — the render/extract scripts and the web app's request handling — with no `claude` login or network access required. A GitHub Actions workflow (`.github/workflows/ci.yml`) runs the same suite on every push/PR to `main`.
+
+This does **not** cover the actual CV tailoring (SKILL.md's parsing/tailoring/review steps) — that only runs through a live, authenticated `claude` CLI session, which CI intentionally doesn't have (see "Runs entirely on your own Claude Code subscription" above). Verify tailoring quality manually, e.g. by running the web app locally.
