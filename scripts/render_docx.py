@@ -17,7 +17,7 @@ import json
 import sys
 
 from docx import Document
-from docx.enum.text import WD_TAB_ALIGNMENT
+from docx.enum.text import WD_TAB_ALIGNMENT, WD_LINE_SPACING
 from docx.shared import Inches, Pt
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
@@ -37,12 +37,15 @@ def add_heading(doc, text):
     bottom.set(qn("w:color"), "222222")
     pBdr.append(bottom)
     pPr.append(pBdr)
-    p.space_after = Pt(4)
+    p.paragraph_format.space_before = Pt(14)
+    p.paragraph_format.space_after = Pt(4)
     return p
 
 
-def add_title_dates_line(doc, title, dates, bold=True, italic=False):
+def add_title_dates_line(doc, title, dates, bold=True, italic=False, space_before=None):
     p = doc.add_paragraph()
+    if space_before is not None:
+        p.paragraph_format.space_before = space_before
     p.paragraph_format.tab_stops.add_tab_stop(Inches(6.3), WD_TAB_ALIGNMENT.RIGHT)
     run = p.add_run(title)
     run.bold = bold
@@ -61,6 +64,12 @@ def build(data, output_path):
         section.right_margin = Inches(0.7)
         section.top_margin = Inches(0.6)
         section.bottom_margin = Inches(0.6)
+
+    normal_style = doc.styles["Normal"]
+    normal_style.font.name = "Arial"
+    normal_style.font.size = Pt(11)
+    normal_style.paragraph_format.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
+    normal_style.paragraph_format.line_spacing = 1.15
 
     contact_bits = [b for b in [data.get("email"), data.get("phone"), data.get("location"), data.get("links"), data.get("work_authorization")] if b]
     contact_line = "  |  ".join(contact_bits)
@@ -108,7 +117,7 @@ def build(data, output_path):
     if data.get("experience"):
         add_heading(doc, "Experience")
         for job in data["experience"]:
-            add_title_dates_line(doc, job.get("title", ""), job.get("dates", ""), bold=True)
+            add_title_dates_line(doc, job.get("title", ""), job.get("dates", ""), bold=True, space_before=Pt(9))
             sub = job.get("company", "") + (f"    {job['location']}" if job.get("location") else "")
             if sub:
                 add_title_dates_line(doc, sub, "", bold=False, italic=True)
@@ -118,7 +127,7 @@ def build(data, output_path):
     if data.get("education"):
         add_heading(doc, "Education")
         for edu in data["education"]:
-            add_title_dates_line(doc, edu.get("degree", ""), edu.get("dates", ""), bold=True)
+            add_title_dates_line(doc, edu.get("degree", ""), edu.get("dates", ""), bold=True, space_before=Pt(9))
             sub = edu.get("school", "") + (f"    {edu['location']}" if edu.get("location") else "")
             if sub:
                 add_title_dates_line(doc, sub, "", bold=False, italic=True)

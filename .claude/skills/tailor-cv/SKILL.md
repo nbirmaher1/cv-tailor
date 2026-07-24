@@ -7,7 +7,7 @@ description: Tailor a CV/resume to a specific job posting and render it as a sty
 
 Inputs: CV file (PDF or .docx), job description (URL, or pasted text if no URL works), optional photo file, optional candidate notes (contact/location/visa updates, extra detail not in the CV), optional output format (`pdf`/`docx`, default `pdf`) and/or explicit output paths. Ask for whatever required input is missing (notes are optional — don't block on them).
 
-Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`): `~/projects/cv-tailor/venv/bin/python3`.
+Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`): `~/projects/cv-tailor/venv/bin/python3`. Industry standards reference: `cv-standards.md` (same directory as this file) — read it before step 4, and pass it to the review subagent in step 5.
 
 ## Steps
 
@@ -41,7 +41,8 @@ Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`
    - Normalize `location` to "City, Country" (or "City, State" for the US); drop street address/postal code. This is formatting, not tailoring — apply regardless of the job, never invent a location.
 
 4. **Tailor the content to the job posting** (draft — gets reviewed in step 5):
-   - First, extract the JD's 8-10 most critical required skills/tools/responsibilities — this is what you'll weave into rewritten bullets (the primary place keywords should live) and the skills section, only where the CV genuinely supports it. Adopting JD terminology the CV doesn't back up is keyword-stuffing, not tailoring.
+   - **Read `cv-standards.md` first** — it's the industry quality bar for the rest of this step, not optional background.
+   - Extract the JD's 8-10 most critical required skills/tools/responsibilities — this is what you'll weave into rewritten bullets (the primary place keywords should live) and the skills section, only where the CV genuinely supports it. Adopting JD terminology the CV doesn't back up is keyword-stuffing, not tailoring.
    - `summary`: 3-4 tight sentences — mirror the JD's title/domain, name genuinely-supported competencies from the JD list, include one concrete proof point (metric/scale/outcome) from the CV.
    - Judge every role and bullet against this job: **core** (keep, lead with it), **tangential** (keep trimmed), **irrelevant** (cut entirely). Cut whole irrelevant roles when other material covers the page.
    - **Bullet caps: 3-5 for core roles, 1-2 for tangential/older roles.** Rank by fit, cut to the cap — don't keep a bullet for being impressive if it's not a strong match.
@@ -50,13 +51,14 @@ Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`
    - **Every surviving bullet is an achievement, not a duty**: strong action verb (never "Responsible for"/"Worked on"), "achieved X by doing Y" shape, exact metrics from the source (never invented or rounded up). Cut bullets with no impact and no JD relevance. Translate technical detail into business impact only where the source states that outcome.
    - **Hard cap: ~2 rendered lines per bullet (~180-200 chars / 28-32 words).** Condense long source bullets/narrative paragraphs to fit rather than carrying them over verbatim.
    - **Skills section — cut hard, this is the fastest way the CV overflows:** 3-5 categories (or one flat list) × 3-5 items, ~20 items total hard cap. Tool/skill names only, no parenthetical scope explanations. Drop irrelevant categories/items; fold near-empty categories into a related one.
-   - **Length target: 1 page by default.** 2 pages only if 5+ years of relevant experience (or genuinely extensive relevant project work) AND every line on page 2 is job-relevant — a deliberate full 2 pages, not padding. A "spilled" ~1.5 pages is never an acceptable resting point either way. **Never more than 2 pages.**
+   - **Length is set by years of relevant experience, per `cv-standards.md`: under 10 years → strictly 1 page; 10+ years → exactly 2 pages.** Determine the candidate's years of relevant experience from the CV to apply this. A "spilled" ~1.5 pages is never acceptable either way — cut harder, or the experience genuinely earns a full 2.
    - **Never invent experience, skills, titles, or dates.** Omit what's missing rather than fabricate it.
 
-5. **Independent review.** Use the Agent tool (`subagent_type: general-purpose`, foreground) with a self-contained prompt: full original CV text, full JD text, any candidate notes, and the draft JSON. Ask it to check and report `PASS` or a specific, quoted, actionable fix list for:
+5. **Independent review.** Use the Agent tool (`subagent_type: general-purpose`, foreground) with a self-contained prompt: full original CV text, full JD text, any candidate notes, the draft JSON, and the contents of `cv-standards.md`. Ask it to check and report `PASS` or a specific, quoted, actionable fix list for:
    - **Accuracy**: every claim traceable to the CV or notes; flag anything added/exaggerated/unsupported, including JD phrasing that overstates what the original bullet said.
    - **Relevance/selection**: ignored JD requirements the CV had material for; generic filler rewrites; for master-CV sources, low-relevance content kept/under-trimmed while stronger material got cut.
    - **Bullet quality/caps**: duty-framing, no-impact bullets, anything that'll wrap past 2 lines, roles over their cap, Skills over ~20 items/5 categories/with parenthetical scope, duplicate bullets covering the same work.
+   - **Standards compliance** (per `cv-standards.md`): length matches the candidate's years of relevant experience (1 page under 10 years, exactly 2 at 10+, never a ~1.5-page spill); skills are demonstrated in bullets rather than only listed; the summary is genuinely re-tailored to this posting, not generic.
    - **Completeness (of what's relevant, not the whole source)**: contact info or still-relevant sections missing; notes not reflected. Intentional dropping of low-relevance content from a long source is expected, not a completeness bug — only flag a drop that removed the CV's only evidence for an explicit JD requirement.
    
    Revise and re-review once more if fixes are returned (max 2 rounds total). If issues remain after that, proceed with the best version and note the unresolved concern in step 9.
@@ -70,7 +72,7 @@ Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`
      `venv/bin/python3 scripts/render_docx.py <output>.json <output>.docx`
 
 8. **QA the actual rendered output before presenting it, and enforce the length policy against it — not the JSON.**
-   - **PDF**: Read the rendered PDF and look at the page(s) — check spacing, overlap/cutoff text, empty-field gaps, thin extra pages. Fix `templates/default.html` if it's a template bug. Treat the page count as a strict gate: apply the step-4 test (5+ yrs relevant experience + fully relevant page 2) to justify 2 pages; a spilled ~1.5 pages is never acceptable; 3+ pages is never acceptable regardless of experience.
+   - **PDF**: Read the rendered PDF and look at the page(s) — check spacing, overlap/cutoff text, empty-field gaps, thin extra pages. Fix `templates/default.html` if it's a template bug. Treat the page count as a strict gate per `cv-standards.md`: under 10 years of relevant experience must land on exactly 1 page, 10+ years on exactly 2; a spilled ~1.5 pages is never acceptable; 3+ pages is never acceptable regardless of experience.
    - **DOCX**: run `venv/bin/python3 scripts/docx_stats.py <output>.json` (bullet count, narrative word count) as a length proxy — comfortably-1-page tends to land ~550-650 words / <16-18 bullets. Apply the same 1-page/2-page test. Also sanity-check the JSON for structural issues (empty required fields, a section blank when the source had content).
    - **If cutting further, cut in this order**: Skills to its cap → tangential/older bullets to their cap → core-role bullets to their cap. Re-render and recheck after each round, capped at 2 additional cut-and-recheck iterations. If still over after that: proceed and note it honestly if genuinely justified, otherwise cut harder rather than ship an unjustified overage.
 
