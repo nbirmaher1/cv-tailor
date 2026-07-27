@@ -1,204 +1,375 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cv-tailor</title>
+<title>cv-tailor — Tailor your CV in seconds</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'media',
+    theme: {
+      extend: {
+        fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'] },
+        colors: { accent: { DEFAULT: '#4f46e5', hover: '#4338ca', light: '#eef2ff' } },
+        boxShadow: { soft: '0 1px 2px rgba(15,15,20,0.04), 0 12px 32px -12px rgba(15,15,20,0.12)' },
+      }
+    }
+  }
+</script>
 <style>
-  :root { color-scheme: light dark; }
-  body {
-    font-family: -apple-system, "Helvetica Neue", Arial, sans-serif;
-    max-width: 560px;
-    margin: 48px auto;
-    padding: 0 20px;
-    color: #1a1a1a;
-    background: #fafafa;
-  }
-  @media (prefers-color-scheme: dark) {
-    body { color: #eee; background: #16161a; }
-  }
-  h1 { font-size: 20px; margin-bottom: 4px; }
-  p.sub { color: #777; margin-top: 0; font-size: 14px; }
-  label { display: block; font-weight: 600; font-size: 13px; margin: 20px 0 6px; }
-  .dropzone {
-    border: 2px dashed #999;
-    border-radius: 10px;
-    padding: 28px;
-    text-align: center;
-    cursor: pointer;
-    font-size: 14px;
-    color: #666;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .dropzone.dragover { border-color: #3366ff; background: rgba(51,102,255,0.06); }
-  .dropzone.has-file { border-style: solid; border-color: #2a2; color: inherit; }
-  input[type=text], textarea {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 10px;
-    border-radius: 8px;
-    border: 1px solid #ccc;
-    font-size: 14px;
-    font-family: inherit;
-    background: white;
-    color: inherit;
-  }
-  @media (prefers-color-scheme: dark) {
-    input[type=text], textarea { background: #222; border-color: #444; }
-  }
-  textarea { min-height: 90px; resize: vertical; }
-  button {
-    margin-top: 24px;
-    width: 100%;
-    padding: 12px;
-    border: none;
-    border-radius: 8px;
-    background: #3366ff;
-    color: white;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  button:disabled { background: #99aadd; cursor: default; }
-  #status { margin-top: 16px; font-size: 14px; }
-  #status.error { color: #c0392b; white-space: pre-wrap; }
-  #status.ok { color: #1f8b3a; }
-  a.download {
-    display: inline-block;
-    margin-top: 8px;
-    color: #3366ff;
-    font-weight: 600;
-  }
-  #file-input, #photo-input { display: none; }
-  .dropzone.small { padding: 16px; }
-  .format-row { display: flex; gap: 16px; margin-top: 6px; }
-  .format-row label { display: flex; align-items: center; gap: 6px; font-weight: normal; margin: 0; font-size: 14px; }
-  .optional-tag { font-weight: normal; color: #888; }
-  .hint { font-weight: normal; color: #888; font-size: 12px; margin: 4px 0 0; }
-  #progress-wrap { display: none; margin-top: 20px; }
-  #progress-track {
-    width: 100%;
-    height: 8px;
-    border-radius: 4px;
-    background: #e2e2e2;
-    overflow: hidden;
-  }
-  @media (prefers-color-scheme: dark) {
-    #progress-track { background: #333; }
-  }
-  #progress-bar {
-    height: 100%;
-    width: 3%;
-    background: #3366ff;
-    border-radius: 4px;
-    transition: width 0.4s ease;
-  }
-  #progress-message { margin-top: 8px; font-size: 14px; color: #555; }
-  @media (prefers-color-scheme: dark) {
-    #progress-message { color: #aaa; }
-  }
+  html { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+  ::selection { background: #c7d2fe; }
+  @keyframes fade-up { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .fade-up { animation: fade-up .35s ease both; }
+  summary::-webkit-details-marker { display: none; }
+  input:focus, textarea:focus, button:focus-visible { outline: none; }
+  .focus-ring:focus { box-shadow: 0 0 0 3px rgba(79,70,229,0.18); border-color: #4f46e5; }
 </style>
 </head>
-<body>
+<body class="min-h-screen bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 antialiased">
 
-  <h1>cv-tailor</h1>
-  <p class="sub">Drop your CV, paste a job posting, get a tailored PDF back. Runs locally through your own Claude Code login &mdash; no data leaves your machine except the CV parsing/job-fetch/tailoring steps Claude Code itself performs.</p>
+  <!-- Header -->
+  <header class="max-w-5xl mx-auto px-6 py-6 flex items-center justify-between">
+    <div class="flex items-center gap-2">
+      <div class="w-6 h-6 rounded-md bg-zinc-900 dark:bg-white flex items-center justify-center">
+        <span class="text-white dark:text-zinc-900 text-xs font-bold">CV</span>
+      </div>
+      <span class="font-semibold tracking-tight">cv-tailor</span>
+    </div>
+    <span class="hidden sm:inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+      <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+      Runs locally via Claude Code
+    </span>
+  </header>
 
-  <form id="form">
-    <label>CV file (PDF or .docx)</label>
-    <div class="dropzone" id="dropzone">Drag &amp; drop your CV here, or click to choose a file</div>
-    <input type="file" id="file-input" accept=".pdf,.docx">
+  <!-- Hero -->
+  <section class="max-w-2xl mx-auto px-6 pt-8 pb-10 text-center">
+    <h1 class="text-4xl sm:text-5xl font-bold tracking-tight text-zinc-900 dark:text-white">
+      Tailor your CV in seconds
+    </h1>
+    <p class="mt-4 text-lg text-zinc-500 dark:text-zinc-400 leading-relaxed">
+      Drop your resume and a job posting. Get back an ATS-ready CV, rewritten for the role.
+    </p>
+  </section>
 
-    <label>Job posting URL</label>
-    <input type="text" id="job-url" placeholder="https://www.linkedin.com/jobs/view/...">
+  <!-- Main card -->
+  <main class="max-w-2xl mx-auto px-6 pb-20">
+    <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-soft ring-1 ring-zinc-900/5 dark:ring-white/10 p-6 sm:p-8">
 
-    <label>Or paste the job description text (used if the URL can't be fetched)</label>
-    <textarea id="job-text" placeholder="Paste the full job description here"></textarea>
+      <!-- FORM STATE -->
+      <form id="form" class="space-y-8">
 
-    <label>Photo <span class="optional-tag">(optional)</span></label>
-    <div class="dropzone small" id="photo-dropzone">Drag &amp; drop a photo here, or click to choose one</div>
-    <input type="file" id="photo-input" accept="image/*">
+        <!-- Step 1: CV upload -->
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <span class="flex items-center justify-center w-5 h-5 rounded-full bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-[11px] font-semibold">1</span>
+            <label class="text-sm font-semibold text-zinc-900 dark:text-white">Upload your CV</label>
+            <span class="text-xs text-zinc-400">PDF or Word</span>
+          </div>
 
-    <label>Output format</label>
-    <div class="format-row">
-      <label><input type="radio" name="format" value="pdf" checked> PDF</label>
-      <label><input type="radio" name="format" value="docx"> DOCX (Word)</label>
+          <div id="dropzone" tabindex="0"
+               class="group relative cursor-pointer rounded-xl border-2 border-dashed border-zinc-200 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/30 px-6 py-10 text-center transition-all duration-200 hover:border-accent hover:bg-accent-light dark:hover:bg-accent/10">
+            <input type="file" id="file-input" accept=".pdf,.docx" class="hidden">
+
+            <div id="dropzone-empty" class="flex flex-col items-center gap-3">
+              <svg class="w-9 h-9 text-zinc-400 group-hover:text-accent transition-colors" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 8.25 12 3.75m0 0L7.5 8.25M12 3.75v12" />
+              </svg>
+              <div>
+                <p class="text-sm font-medium text-zinc-700 dark:text-zinc-200">Drag &amp; drop your CV here</p>
+                <p class="text-xs text-zinc-400 mt-1">or click to browse — PDF or DOCX, up to 10 MB</p>
+              </div>
+            </div>
+
+            <div id="dropzone-filled" class="hidden flex-col items-center gap-2">
+              <svg class="w-8 h-8 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+              </svg>
+              <p id="file-name-display" class="text-sm font-medium text-zinc-800 dark:text-zinc-100 truncate max-w-full px-4"></p>
+              <button type="button" id="file-clear" class="text-xs text-zinc-400 hover:text-red-500 transition-colors">Remove</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Job posting -->
+        <div>
+          <div class="flex items-center gap-2 mb-3">
+            <span class="flex items-center justify-center w-5 h-5 rounded-full bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-[11px] font-semibold">2</span>
+            <label class="text-sm font-semibold text-zinc-900 dark:text-white">Add the job posting</label>
+          </div>
+
+          <input type="text" id="job-url" placeholder="Paste a job posting URL…"
+                 class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-3 text-sm placeholder:text-zinc-400 transition-all focus-ring">
+
+          <div class="flex items-center gap-3 my-3">
+            <div class="h-px flex-1 bg-zinc-100 dark:bg-zinc-800"></div>
+            <span class="text-xs text-zinc-400">or paste the description</span>
+            <div class="h-px flex-1 bg-zinc-100 dark:bg-zinc-800"></div>
+          </div>
+
+          <textarea id="job-text" rows="4" maxlength="50000" placeholder="Paste the full job description here…"
+                    class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-3 text-sm placeholder:text-zinc-400 resize-y transition-all focus-ring"></textarea>
+          <p class="text-xs text-zinc-400 mt-1.5">Used if the URL can't be fetched.</p>
+        </div>
+
+        <!-- More options (collapsible) -->
+        <details class="group rounded-xl border border-zinc-100 dark:border-zinc-800 overflow-hidden">
+          <summary class="flex items-center justify-between cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+            <span>More options</span>
+            <svg class="w-4 h-4 text-zinc-400 transition-transform duration-200 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
+            </svg>
+          </summary>
+
+          <div class="px-4 pb-5 pt-1 space-y-5 border-t border-zinc-100 dark:border-zinc-800">
+
+            <!-- Output format -->
+            <div>
+              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mt-4 mb-2">Output format</label>
+              <div class="inline-flex rounded-lg bg-zinc-100 dark:bg-zinc-800 p-1 text-sm">
+                <label class="cursor-pointer">
+                  <input type="radio" name="format" value="pdf" checked class="peer hidden">
+                  <span class="block px-4 py-1.5 rounded-md text-zinc-500 dark:text-zinc-400 peer-checked:bg-white dark:peer-checked:bg-zinc-700 peer-checked:text-zinc-900 dark:peer-checked:text-white peer-checked:shadow-sm transition-all">PDF</span>
+                </label>
+                <label class="cursor-pointer">
+                  <input type="radio" name="format" value="docx" class="peer hidden">
+                  <span class="block px-4 py-1.5 rounded-md text-zinc-500 dark:text-zinc-400 peer-checked:bg-white dark:peer-checked:bg-zinc-700 peer-checked:text-zinc-900 dark:peer-checked:text-white peer-checked:shadow-sm transition-all">DOCX</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Filename -->
+            <div>
+              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">File name <span class="font-normal text-zinc-400">(optional)</span></label>
+              <input type="text" id="file-name" placeholder="e.g. Nathan_Birmaher_Acme_CV"
+                     class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm placeholder:text-zinc-400 transition-all focus-ring">
+              <p class="text-xs text-zinc-400 mt-1.5">Defaults to "tailored_cv" if left blank.</p>
+            </div>
+
+            <!-- Photo -->
+            <div>
+              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Photo <span class="font-normal text-zinc-400">(optional)</span></label>
+              <div id="photo-dropzone" tabindex="0"
+                   class="group cursor-pointer rounded-xl border-2 border-dashed border-zinc-200 dark:border-zinc-700 px-4 py-4 text-center transition-all duration-200 hover:border-accent hover:bg-accent-light dark:hover:bg-accent/10">
+                <input type="file" id="photo-input" accept="image/*" class="hidden">
+                <p id="photo-label" class="text-xs text-zinc-400 group-hover:text-accent transition-colors">Drag &amp; drop a photo, or click to choose one — up to 5 MB</p>
+              </div>
+            </div>
+
+            <!-- Notes -->
+            <div>
+              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Additional comments <span class="font-normal text-zinc-400">(optional)</span></label>
+              <textarea id="notes" rows="3" maxlength="2000" placeholder="e.g. &quot;relocating to Amsterdam, no visa sponsorship needed&quot;, an extra detail about a role, or an updated phone number."
+                        class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm placeholder:text-zinc-400 resize-y transition-all focus-ring"></textarea>
+              <p class="text-xs text-zinc-400 mt-1.5">Applied directly to the tailored CV — won't invent unrelated experience.</p>
+            </div>
+
+          </div>
+        </details>
+
+        <!-- CTA -->
+        <button type="submit" id="submit-btn"
+                class="w-full flex items-center justify-center gap-2 rounded-xl bg-accent hover:bg-accent-hover disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:cursor-not-allowed text-white font-semibold text-sm py-3.5 transition-all duration-200 shadow-sm hover:shadow-md active:scale-[0.99]">
+          <span>Tailor my CV</span>
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M17.25 8.25 21 12m0 0-3.75 3.75M21 12H3" />
+          </svg>
+        </button>
+
+        <div id="form-error" class="hidden rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900 px-4 py-3 text-sm text-red-600 dark:text-red-400"></div>
+      </form>
+
+      <!-- LOADING STATE -->
+      <div id="loading-state" class="hidden fade-up flex flex-col items-center text-center py-10">
+        <div class="relative w-14 h-14 mb-6">
+          <div class="absolute inset-0 rounded-full border-4 border-zinc-100 dark:border-zinc-800"></div>
+          <div class="absolute inset-0 rounded-full border-4 border-accent border-t-transparent animate-spin"></div>
+        </div>
+        <p id="progress-message" class="text-sm font-medium text-zinc-700 dark:text-zinc-200">Starting…</p>
+        <div class="w-full max-w-xs mt-5 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+          <div id="progress-bar" class="h-full bg-accent rounded-full transition-all duration-500 ease-out" style="width: 3%"></div>
+        </div>
+        <p class="text-xs text-zinc-400 mt-6 max-w-xs">This runs through your local Claude Code session — no data leaves your machine except the parsing/fetch/tailoring steps Claude performs.</p>
+        <button type="button" id="cancel-btn" class="mt-5 text-xs text-zinc-400 hover:text-red-500 transition-colors">Cancel</button>
+      </div>
+
+      <!-- SUCCESS STATE -->
+      <div id="success-state" class="hidden fade-up flex flex-col items-center text-center py-10">
+        <div class="w-14 h-14 rounded-full bg-emerald-50 dark:bg-emerald-950/40 flex items-center justify-center mb-5">
+          <svg class="w-7 h-7 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+          </svg>
+        </div>
+        <p class="text-base font-semibold text-zinc-900 dark:text-white">Your tailored CV is ready</p>
+        <p class="text-sm text-zinc-400 mt-1">Rewritten and reformatted for the role you targeted.</p>
+
+        <div id="rationale-card" class="hidden w-full text-left mt-6 rounded-xl border border-zinc-100 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-800/30 p-5">
+          <p class="text-xs font-semibold text-zinc-500 dark:text-zinc-400 tracking-wide uppercase mb-2">What we changed</p>
+          <p id="rationale-summary" class="text-sm text-zinc-700 dark:text-zinc-200 leading-relaxed"></p>
+          <ul id="rationale-changes" class="mt-3 space-y-1.5"></ul>
+          <div id="rationale-review" class="hidden mt-3 pt-3 border-t border-zinc-200/70 dark:border-zinc-700/50 flex items-start gap-2">
+            <svg class="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
+            </svg>
+            <p id="rationale-review-text" class="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed"></p>
+          </div>
+        </div>
+
+        <div id="preview-wrap" class="hidden w-full mt-6 rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700 shadow-sm bg-white relative">
+          <div id="preview-loading" class="h-[520px] flex items-center justify-center text-xs text-zinc-400 animate-pulse">Loading preview…</div>
+          <iframe id="preview-frame" class="hidden w-full h-[520px] border-0" title="CV preview"></iframe>
+        </div>
+        <div id="preview-fallback" class="hidden w-full mt-6 rounded-xl border border-dashed border-zinc-200 dark:border-zinc-700 px-4 py-6 text-center">
+          <p class="text-sm text-zinc-400">Preview isn't available for Word documents — download below to view it.</p>
+        </div>
+
+        <button type="button" id="download-btn" class="mt-6 inline-flex items-center gap-2 rounded-xl bg-accent hover:bg-accent-hover disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:cursor-not-allowed text-white font-semibold text-sm px-6 py-3 transition-all duration-200 shadow-sm hover:shadow-md">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3.75m0 0 4.5 3.75M12 3.75v12" />
+          </svg>
+          <span id="download-label">Download</span>
+        </button>
+        <button type="button" id="restart-btn" class="mt-4 text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors">Tailor another CV</button>
+      </div>
+
     </div>
 
-    <label>File name <span class="optional-tag">(optional)</span></label>
-    <input type="text" id="file-name" placeholder="e.g. Nathan_Birmaher_Acme_CV">
-    <p class="hint">If left blank, the file will be named "tailored_cv".</p>
-
-    <label>Additional comments <span class="optional-tag">(optional)</span></label>
-    <textarea id="notes" placeholder="Anything not in your CV that should be reflected — e.g. &quot;relocating to Amsterdam, no visa sponsorship needed&quot;, an extra detail about a role, or an updated phone number."></textarea>
-    <p class="hint">Applied directly to the tailored CV — e.g. updates contact/location fields or adds the specifics you call out. Won't invent unrelated experience.</p>
-
-    <button type="submit" id="submit-btn">Tailor my CV</button>
-  </form>
-
-  <div id="progress-wrap">
-    <div id="progress-track"><div id="progress-bar"></div></div>
-    <div id="progress-message">Starting…</div>
-  </div>
-
-  <div id="status"></div>
+    <p class="text-center text-xs text-zinc-300 dark:text-zinc-600 mt-8">cv-tailor · powered by Claude</p>
+  </main>
 
 <script>
 const dropzone = document.getElementById('dropzone');
+const dropzoneEmpty = document.getElementById('dropzone-empty');
+const dropzoneFilled = document.getElementById('dropzone-filled');
+const fileNameDisplay = document.getElementById('file-name-display');
 const fileInput = document.getElementById('file-input');
+const fileClear = document.getElementById('file-clear');
+
 const photoDropzone = document.getElementById('photo-dropzone');
 const photoInput = document.getElementById('photo-input');
+const photoLabel = document.getElementById('photo-label');
+
 const form = document.getElementById('form');
 const submitBtn = document.getElementById('submit-btn');
-const statusEl = document.getElementById('status');
-const progressWrap = document.getElementById('progress-wrap');
+const formError = document.getElementById('form-error');
+
+const loadingState = document.getElementById('loading-state');
+const successState = document.getElementById('success-state');
 const progressBar = document.getElementById('progress-bar');
 const progressMessage = document.getElementById('progress-message');
+const cancelBtn = document.getElementById('cancel-btn');
+const downloadBtn = document.getElementById('download-btn');
+const downloadLabel = document.getElementById('download-label');
+const restartBtn = document.getElementById('restart-btn');
+
+const rationaleCard = document.getElementById('rationale-card');
+const rationaleSummary = document.getElementById('rationale-summary');
+const rationaleChanges = document.getElementById('rationale-changes');
+const rationaleReview = document.getElementById('rationale-review');
+const rationaleReviewText = document.getElementById('rationale-review-text');
+
+const previewWrap = document.getElementById('preview-wrap');
+const previewLoading = document.getElementById('preview-loading');
+const previewFrame = document.getElementById('preview-frame');
+const previewFallback = document.getElementById('preview-fallback');
+
+const MAX_CV_BYTES = 10 * 1024 * 1024;
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+const PHOTO_DEFAULT_LABEL = 'Drag & drop a photo, or click to choose one — up to 5 MB';
+
 let selectedFile = null;
 let selectedPhoto = null;
+let currentRunId = null;
+let currentFormat = null;
+let currentFilename = null;
+let currentCancelToken = null;
+let cachedDownload = null;
 
-function wireDropzone(zoneEl, inputEl, onSelect, emptyText) {
+function wireDropzone(zoneEl, inputEl, onSelect) {
   zoneEl.addEventListener('click', () => inputEl.click());
+  zoneEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputEl.click(); }
+  });
   inputEl.addEventListener('change', () => onSelect(inputEl.files[0] || null));
   ['dragenter', 'dragover'].forEach(evt =>
-    zoneEl.addEventListener(evt, e => { e.preventDefault(); zoneEl.classList.add('dragover'); })
+    zoneEl.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); zoneEl.classList.add('border-accent', 'bg-accent-light'); })
   );
   ['dragleave', 'drop'].forEach(evt =>
-    zoneEl.addEventListener(evt, e => { e.preventDefault(); zoneEl.classList.remove('dragover'); })
+    zoneEl.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); zoneEl.classList.remove('border-accent', 'bg-accent-light'); })
   );
   zoneEl.addEventListener('drop', e => {
     const file = e.dataTransfer.files[0];
-    if (file) onSelect(file);
+    if (file) { inputEl.files = e.dataTransfer.files; onSelect(file); }
   });
 }
 
 wireDropzone(dropzone, fileInput, (file) => {
+  if (file && file.size > MAX_CV_BYTES) {
+    showError('That CV is too large — please keep it under 10 MB.');
+    fileInput.value = '';
+    return;
+  }
+  clearError();
   selectedFile = file;
-  dropzone.textContent = file ? `Selected: ${file.name}` : 'Drag & drop your CV here, or click to choose a file';
-  dropzone.classList.toggle('has-file', !!file);
+  if (file) {
+    dropzoneEmpty.classList.add('hidden');
+    dropzoneFilled.classList.remove('hidden');
+    dropzoneFilled.classList.add('flex');
+    fileNameDisplay.textContent = file.name;
+  } else {
+    dropzoneEmpty.classList.remove('hidden');
+    dropzoneFilled.classList.add('hidden');
+    dropzoneFilled.classList.remove('flex');
+  }
+});
+
+fileClear.addEventListener('click', (e) => {
+  e.stopPropagation();
+  fileInput.value = '';
+  selectedFile = null;
+  dropzoneEmpty.classList.remove('hidden');
+  dropzoneFilled.classList.add('hidden');
+  dropzoneFilled.classList.remove('flex');
 });
 
 wireDropzone(photoDropzone, photoInput, (file) => {
+  if (file && file.size > MAX_PHOTO_BYTES) {
+    showError('That photo is too large — please keep it under 5 MB.');
+    photoInput.value = '';
+    return;
+  }
+  clearError();
   selectedPhoto = file;
-  photoDropzone.textContent = file ? `Selected: ${file.name}` : 'Drag & drop a photo here, or click to choose one';
-  photoDropzone.classList.toggle('has-file', !!file);
+  photoLabel.textContent = file ? `Selected: ${file.name}` : PHOTO_DEFAULT_LABEL;
+  photoDropzone.classList.toggle('border-solid', !!file);
+  photoDropzone.classList.toggle('border-emerald-300', !!file);
 });
+
+function showError(message) {
+  formError.textContent = message;
+  formError.classList.remove('hidden');
+}
+function clearError() {
+  formError.classList.add('hidden');
+  formError.textContent = '';
+}
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
-  statusEl.className = '';
-  statusEl.textContent = '';
+  clearError();
 
   if (!selectedFile) {
-    statusEl.className = 'error';
-    statusEl.textContent = 'Please choose a CV file first.';
+    showError('Please choose a CV file first.');
     return;
   }
   const jobUrl = document.getElementById('job-url').value.trim();
   const jobText = document.getElementById('job-text').value.trim();
   if (!jobUrl && !jobText) {
-    statusEl.className = 'error';
-    statusEl.textContent = 'Please provide a job posting URL or paste the job description.';
+    showError('Please provide a job posting URL or paste the job description.');
     return;
   }
 
@@ -215,8 +386,9 @@ form.addEventListener('submit', async (e) => {
   formData.append('notes', notes);
   if (selectedPhoto) formData.append('photo', selectedPhoto);
 
-  submitBtn.disabled = true;
-  progressWrap.style.display = 'block';
+  form.classList.add('hidden');
+  loadingState.classList.remove('hidden');
+  loadingState.classList.add('flex');
   progressBar.style.width = '3%';
   progressMessage.textContent = 'Starting…';
 
@@ -228,37 +400,161 @@ form.addEventListener('submit', async (e) => {
       throw new Error(detail);
     }
     const { run_id } = await startResp.json();
-    await pollUntilDone(run_id);
+    currentRunId = run_id;
+    currentFormat = format;
+    currentFilename = customFilename;
+    cachedDownload = null;
 
-    const resultResp = await fetch(`/api/tailor/${run_id}/result`);
+    currentCancelToken = {};
+    const rationale = await pollUntilDone(run_id, currentCancelToken);
+    currentCancelToken = null;
+
+    downloadLabel.textContent = 'Download';
+    renderRationale(rationale);
+    renderPreview(run_id, format);
+
+    loadingState.classList.add('hidden');
+    loadingState.classList.remove('flex');
+    successState.classList.remove('hidden');
+    successState.classList.add('flex');
+  } catch (err) {
+    currentCancelToken = null;
+    loadingState.classList.add('hidden');
+    loadingState.classList.remove('flex');
+    form.classList.remove('hidden');
+    showError(err.message || ('Network error: ' + err));
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
+
+cancelBtn.addEventListener('click', async () => {
+  if (!currentRunId || !currentCancelToken) return;
+  cancelBtn.disabled = true;
+  const token = currentCancelToken;
+  try {
+    await fetch(`/api/tailor/${currentRunId}/cancel`, { method: 'POST' });
+  } catch (_) {}
+  if (token.interval) clearInterval(token.interval);
+  if (token.reject) token.reject(new Error('Cancelled — no changes were made.'));
+  cancelBtn.disabled = false;
+});
+
+downloadBtn.addEventListener('click', async () => {
+  if (cachedDownload) {
+    triggerDownload(cachedDownload.url, cachedDownload.filename);
+    return;
+  }
+  downloadBtn.disabled = true;
+  downloadLabel.textContent = 'Preparing…';
+  try {
+    const resultResp = await fetch(`/api/tailor/${currentRunId}/result`);
     if (!resultResp.ok) {
-      let detail = 'Tailoring failed.';
+      let detail = 'Download failed.';
       try { detail = (await resultResp.json()).detail || detail; } catch (_) {}
       throw new Error(detail);
     }
     const blob = await resultResp.blob();
     const url = URL.createObjectURL(blob);
-    const filename = `${customFilename || 'tailored_cv'}.${format}`;
-    statusEl.className = 'ok';
-    statusEl.innerHTML = 'Done! ';
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.className = 'download';
-    link.textContent = `Download ${filename}`;
-    statusEl.appendChild(link);
-    link.click();
+    const filename = `${currentFilename || 'tailored_cv'}.${currentFormat}`;
+    cachedDownload = { url, filename };
+    downloadLabel.textContent = `Download ${filename}`;
+    triggerDownload(url, filename);
   } catch (err) {
-    statusEl.className = 'error';
-    statusEl.textContent = err.message || ('Network error: ' + err);
+    downloadLabel.textContent = 'Download';
+    showError(err.message || 'Download failed.');
   } finally {
-    submitBtn.disabled = false;
-    progressWrap.style.display = 'none';
+    downloadBtn.disabled = false;
   }
 });
 
-function pollUntilDone(runId) {
+function triggerDownload(url, filename) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+async function renderPreview(runId, format) {
+  previewWrap.classList.add('hidden');
+  previewFallback.classList.add('hidden');
+  previewFrame.classList.add('hidden');
+  previewLoading.classList.remove('hidden');
+
+  if (format !== 'pdf') {
+    previewFallback.classList.remove('hidden');
+    return;
+  }
+
+  previewWrap.classList.remove('hidden');
+  try {
+    const resp = await fetch(`/api/tailor/${runId}/preview`);
+    if (!resp.ok) throw new Error('Preview unavailable.');
+    const blob = await resp.blob();
+    previewFrame.src = URL.createObjectURL(blob);
+    previewLoading.classList.add('hidden');
+    previewFrame.classList.remove('hidden');
+  } catch (_) {
+    previewWrap.classList.add('hidden');
+    previewFallback.classList.remove('hidden');
+  }
+}
+
+restartBtn.addEventListener('click', () => {
+  successState.classList.add('hidden');
+  successState.classList.remove('flex');
+  form.classList.remove('hidden');
+  form.reset();
+  fileClear.click();
+  photoInput.value = '';
+  selectedPhoto = null;
+  photoLabel.textContent = PHOTO_DEFAULT_LABEL;
+  photoDropzone.classList.remove('border-solid', 'border-emerald-300');
+  rationaleCard.classList.add('hidden');
+
+  if (cachedDownload) URL.revokeObjectURL(cachedDownload.url);
+  if (previewFrame.src) URL.revokeObjectURL(previewFrame.src);
+  previewFrame.src = '';
+  previewWrap.classList.add('hidden');
+  previewFallback.classList.add('hidden');
+  currentRunId = null;
+  currentFormat = null;
+  currentFilename = null;
+  cachedDownload = null;
+});
+
+function renderRationale(rationale) {
+  if (!rationale || (!rationale.summary && !(rationale.changes || []).length)) {
+    rationaleCard.classList.add('hidden');
+    return;
+  }
+  rationaleSummary.textContent = rationale.summary || '';
+  rationaleSummary.classList.toggle('hidden', !rationale.summary);
+
+  rationaleChanges.innerHTML = '';
+  for (const change of (rationale.changes || [])) {
+    const li = document.createElement('li');
+    li.className = 'flex items-start gap-2 text-sm text-zinc-600 dark:text-zinc-300';
+    li.innerHTML = '<span class="mt-1.5 w-1 h-1 rounded-full bg-accent shrink-0"></span><span></span>';
+    li.querySelector('span:last-child').textContent = change;
+    rationaleChanges.appendChild(li);
+  }
+
+  if (rationale.review_note) {
+    rationaleReviewText.textContent = rationale.review_note;
+    rationaleReview.classList.remove('hidden');
+  } else {
+    rationaleReview.classList.add('hidden');
+  }
+
+  rationaleCard.classList.remove('hidden');
+}
+
+function pollUntilDone(runId, cancelToken) {
   return new Promise((resolve, reject) => {
+    cancelToken.reject = reject;
     const interval = setInterval(async () => {
       try {
         const resp = await fetch(`/api/tailor/${runId}/status`);
@@ -269,13 +565,14 @@ function pollUntilDone(runId) {
         if (s.done) {
           clearInterval(interval);
           if (s.error) reject(new Error(s.error));
-          else resolve();
+          else resolve(s.rationale);
         }
       } catch (err) {
         clearInterval(interval);
         reject(err);
       }
     }, 800);
+    cancelToken.interval = interval;
   });
 }
 </script>
