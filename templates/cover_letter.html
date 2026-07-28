@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Cover Letter</title>
+<style>
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: Arial, sans-serif;
+    color: #222;
+    margin: 0;
+    padding: 56px 64px;
+    font-size: 11pt;
+    line-height: 1.5;
+  }
+  .name { font-size: 16pt; font-weight: 700; margin: 0 0 2px 0; }
+  .contact { font-size: 9.5pt; color: #555; margin-bottom: 28px; }
+  .contact span:not(:last-child)::after { content: "\00a0\00b7\00a0"; }
+  .date { margin-bottom: 20px; }
+  .salutation { margin-bottom: 14px; }
+  p.body-para { margin: 0 0 14px 0; }
+  .closing { margin-top: 20px; }
+  .signature { margin-top: 4px; font-weight: 600; }
+</style>
+</head>
+<body>
+
+  <div class="name">{{FULL_NAME}}</div>
+  <!-- Drop any span whose value is empty rather than leaving a stray separator. -->
+  <div class="contact"><span>{{EMAIL}}</span><span>{{PHONE}}</span><span>{{LOCATION}}</span></div>
+
+  <div class="date">{{DATE}}</div>
+
+  <div class="salutation">{{SALUTATION}}</div>
+
+  <!-- Repeat this paragraph once per item in the "paragraphs" list -->
+  <p class="body-para">{{PARAGRAPH}}</p>
+
+  <div class="closing">{{CLOSING}}</div>
+  <div class="signature">{{SIGNATURE_NAME}}</div>
+
+</body>
+</html>

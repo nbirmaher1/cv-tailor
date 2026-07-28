@@ -61,7 +61,7 @@ Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`
    - **Standards compliance** (per `cv-standards.md`): length matches the candidate's years of relevant experience (1 page under 10 years, exactly 2 at 10+, never a ~1.5-page spill); skills are demonstrated in bullets rather than only listed; the summary is genuinely re-tailored to this posting, not generic.
    - **Completeness (of what's relevant, not the whole source)**: contact info or still-relevant sections missing; notes not reflected. Intentional dropping of low-relevance content from a long source is expected, not a completeness bug — only flag a drop that removed the CV's only evidence for an explicit JD requirement.
    
-   Revise and re-review once more if fixes are returned (max 2 rounds total). If issues remain after that, proceed with the best version and note the unresolved concern in step 9.
+   Revise and re-review once more if fixes are returned (max 2 rounds total). If issues remain after that, proceed with the best version and note the unresolved concern in step 9. If the caller specified a content JSON path (the web app does, so it can later apply a targeted candidate revision without re-tailoring from scratch), write the final reviewed record there.
 
 6. **Determine output format** (`pdf`/`docx`, default `pdf`) and paths (default `output/<job-slug>.<ext>` unless given).
 

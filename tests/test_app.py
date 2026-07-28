@@ -61,6 +61,11 @@ def test_classify_event_unknown_tool_returns_none():
     assert _classify_event("SomeOtherTool", counts) is None
 
 
+def test_classify_event_maps_web_search():
+    counts = {"Read": 0, "WebFetch": 0, "WebSearch": 1, "Agent": 0, "Write": 0, "Bash": 0}
+    assert _classify_event("WebSearch", counts) == ("Researching the company…", 30)
+
+
 # -- /api/tailor/start ------------------------------------------------------
 
 def test_start_requires_job_url_or_text():
@@ -154,6 +159,107 @@ def test_start_rejects_non_image_photo():
     assert "JPG" in response.json()["detail"]
 
 
+def test_start_rejects_oversized_cover_letter_notes():
+    response = client.post(
+        "/api/tailor/start", files=_cv_file(),
+        data={
+            "job_text": "We need a data analyst.",
+            "include_cover_letter": "true",
+            "cover_letter_notes": "x" * (app_module.MAX_COVER_LETTER_NOTES_CHARS + 1),
+            "output_format": "pdf",
+        },
+    )
+    assert response.status_code == 400
+    assert "too long" in response.json()["detail"].lower()
+
+
+def test_start_rejects_invalid_cover_letter_template_extension():
+    response = client.post(
+        "/api/tailor/start", files={
+            **_cv_file(),
+            "cover_letter_template": ("old_letter.exe", b"not a document", "application/octet-stream"),
+        },
+        data={"job_text": "We need a data analyst.", "include_cover_letter": "true", "output_format": "pdf"},
+    )
+    assert response.status_code == 400
+    assert "template" in response.json()["detail"].lower()
+
+
+def test_start_accepts_cover_letter_request(monkeypatch):
+    monkeypatch.setattr(app_module, "_run_claude", lambda *a, **kw: None)
+    response = client.post(
+        "/api/tailor/start", files=_cv_file(),
+        data={
+            "job_text": "We need a data analyst.",
+            "include_cover_letter": "true",
+            "cover_letter_notes": "Mention my passion for climate tech.",
+            "output_format": "pdf",
+        },
+    )
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+    assert run_id in app_module.RUNS
+    assert app_module.RUNS[run_id]["cover_letter_file"].name == "cover_letter.pdf"
+
+
+class _FakeThread:
+    """Captures the target/args a threading.Thread would have run, without starting one."""
+
+    last_args = None
+
+    def __init__(self, target=None, args=(), daemon=None):
+        _FakeThread.last_args = args
+
+    def start(self):
+        pass
+
+
+def test_start_with_intelligent_cover_letter_grants_web_search(monkeypatch):
+    monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
+    response = client.post(
+        "/api/tailor/start", files=_cv_file(),
+        data={
+            "job_text": "We need a data analyst.",
+            "include_cover_letter": "true",
+            "intelligent_cover_letter": "true",
+            "output_format": "pdf",
+        },
+    )
+    assert response.status_code == 200
+    allowed_tools = _FakeThread.last_args[4]
+    assert "WebSearch" in allowed_tools
+    app_module.RUNS.pop(response.json()["run_id"], None)
+
+
+def test_start_intelligent_cover_letter_ignored_without_cover_letter(monkeypatch):
+    monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
+    response = client.post(
+        "/api/tailor/start", files=_cv_file(),
+        data={
+            "job_text": "We need a data analyst.",
+            "include_cover_letter": "false",
+            "intelligent_cover_letter": "true",
+            "output_format": "pdf",
+        },
+    )
+    assert response.status_code == 200
+    allowed_tools = _FakeThread.last_args[4]
+    assert "WebSearch" not in allowed_tools
+    app_module.RUNS.pop(response.json()["run_id"], None)
+
+
+def test_start_without_intelligent_cover_letter_omits_web_search(monkeypatch):
+    monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
+    response = client.post(
+        "/api/tailor/start", files=_cv_file(),
+        data={"job_text": "We need a data analyst.", "output_format": "pdf"},
+    )
+    assert response.status_code == 200
+    allowed_tools = _FakeThread.last_args[4]
+    assert "WebSearch" not in allowed_tools
+    app_module.RUNS.pop(response.json()["run_id"], None)
+
+
 # -- _read_rationale ----------------------------------------------------------
 
 def test_read_rationale_missing_file_returns_none(tmp_path):
@@ -220,6 +326,9 @@ def _make_run(run_id, tmp_path, **overrides):
         "rationale": None,
         "proc": None,
         "cancelled": False,
+        "revising": False,
+        "revision_count": 0,
+        "cover_letter_file": run_dir / "cover_letter.pdf",
     }
     run.update(overrides)
     app_module.RUNS[run_id] = run
@@ -260,6 +369,58 @@ def test_preview_serves_pdf_inline(tmp_path):
     app_module.RUNS.pop("run-d", None)
 
 
+# -- cover letter (status/preview/result) ------------------------------------
+
+def test_status_has_cover_letter_false_when_none_generated(tmp_path):
+    _make_run("run-s1", tmp_path)
+    response = client.get("/api/tailor/run-s1/status")
+    assert response.status_code == 200
+    assert response.json()["has_cover_letter"] is False
+    app_module.RUNS.pop("run-s1", None)
+
+
+def test_status_has_cover_letter_true_when_file_exists(tmp_path):
+    run_dir = _make_run("run-s2", tmp_path)
+    (run_dir / "cover_letter.pdf").write_bytes(b"%PDF-1.4 fake")
+    response = client.get("/api/tailor/run-s2/status")
+    assert response.status_code == 200
+    assert response.json()["has_cover_letter"] is True
+    app_module.RUNS.pop("run-s2", None)
+
+
+def test_cover_letter_preview_404_when_not_generated(tmp_path):
+    _make_run("run-s3", tmp_path)
+    response = client.get("/api/tailor/run-s3/cover-letter/preview")
+    assert response.status_code == 404
+    app_module.RUNS.pop("run-s3", None)
+
+
+def test_cover_letter_preview_serves_pdf_inline(tmp_path):
+    run_dir = _make_run("run-s4", tmp_path)
+    (run_dir / "cover_letter.pdf").write_bytes(b"%PDF-1.4 fake")
+    response = client.get("/api/tailor/run-s4/cover-letter/preview")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert "content-disposition" not in response.headers
+    app_module.RUNS.pop("run-s4", None)
+
+
+def test_cover_letter_result_404_when_not_generated(tmp_path):
+    _make_run("run-s5", tmp_path)
+    response = client.get("/api/tailor/run-s5/cover-letter/result")
+    assert response.status_code == 404
+    app_module.RUNS.pop("run-s5", None)
+
+
+def test_cover_letter_result_serves_with_suffixed_filename(tmp_path):
+    run_dir = _make_run("run-s6", tmp_path)
+    (run_dir / "cover_letter.pdf").write_bytes(b"%PDF-1.4 fake")
+    response = client.get("/api/tailor/run-s6/cover-letter/result")
+    assert response.status_code == 200
+    assert "tailored_cv_cover_letter.pdf" in response.headers["content-disposition"]
+    app_module.RUNS.pop("run-s6", None)
+
+
 # -- /api/tailor/{run_id}/cancel ---------------------------------------------
 
 def test_cancel_unknown_run_id_returns_404():
@@ -293,3 +454,116 @@ def test_cancel_in_progress_run_marks_done_and_deletes_dir(tmp_path):
     assert app_module.RUNS["run-f"]["error"] == "Cancelled."
     assert app_module.RUNS["run-f"]["cancelled"] is True
     app_module.RUNS.pop("run-f", None)
+
+
+def test_cancel_during_revision_keeps_dir_and_clears_error(tmp_path):
+    run_dir = _make_run("run-j", tmp_path, done=False, error=None, revising=True, revision_count=1)
+    (run_dir / "content.json").write_text("{}")
+    (run_dir / "output.pdf").write_bytes(b"%PDF-1.4 fake")
+    killed = {"called": False}
+
+    class FakeProc:
+        def kill(self):
+            killed["called"] = True
+
+    app_module.RUNS["run-j"]["proc"] = FakeProc()
+
+    response = client.post("/api/tailor/run-j/cancel")
+    assert response.status_code == 200
+    assert response.json() == {"cancelled": True}
+    assert killed["called"] is True
+    # Unlike a cancelled fresh run, a cancelled revision keeps the previous,
+    # still-valid result on disk and leaves the run usable (no persistent error).
+    assert run_dir.exists()
+    assert (run_dir / "output.pdf").exists()
+    run = app_module.RUNS["run-j"]
+    assert run["done"] is True
+    assert run["error"] is None
+    assert run["cancelled"] is True
+    assert run["revising"] is False
+    app_module.RUNS.pop("run-j", None)
+
+
+# -- /api/tailor/{run_id}/revise ---------------------------------------------
+
+def test_revise_unknown_run_id_returns_404():
+    response = client.post("/api/tailor/does-not-exist/revise", data={"feedback": "Shorten it."})
+    assert response.status_code == 404
+
+
+def test_revise_empty_feedback_returns_400(tmp_path):
+    _make_run("run-k", tmp_path)
+    response = client.post("/api/tailor/run-k/revise", data={"feedback": "   "})
+    assert response.status_code == 400
+    app_module.RUNS.pop("run-k", None)
+
+
+def test_revise_oversized_feedback_returns_400(tmp_path):
+    _make_run("run-l", tmp_path)
+    response = client.post(
+        "/api/tailor/run-l/revise",
+        data={"feedback": "x" * (app_module.MAX_FEEDBACK_CHARS + 1)},
+    )
+    assert response.status_code == 400
+    assert "too long" in response.json()["detail"].lower()
+    app_module.RUNS.pop("run-l", None)
+
+
+def test_revise_not_done_returns_409(tmp_path):
+    _make_run("run-m", tmp_path, done=False)
+    response = client.post("/api/tailor/run-m/revise", data={"feedback": "Shorten it."})
+    assert response.status_code == 409
+    app_module.RUNS.pop("run-m", None)
+
+
+def test_revise_with_existing_error_returns_409(tmp_path):
+    _make_run("run-n", tmp_path, error="Cancelled.")
+    response = client.post("/api/tailor/run-n/revise", data={"feedback": "Shorten it."})
+    assert response.status_code == 409
+    app_module.RUNS.pop("run-n", None)
+
+
+def test_revise_at_max_revisions_returns_400(tmp_path):
+    _make_run("run-o", tmp_path, revision_count=app_module.MAX_REVISIONS)
+    response = client.post("/api/tailor/run-o/revise", data={"feedback": "Shorten it."})
+    assert response.status_code == 400
+    assert "used all" in response.json()["detail"].lower()
+    app_module.RUNS.pop("run-o", None)
+
+
+def test_revise_missing_content_json_returns_409(tmp_path):
+    run_dir = _make_run("run-p", tmp_path)
+    (run_dir / "output.pdf").write_bytes(b"%PDF-1.4 fake")
+    response = client.post("/api/tailor/run-p/revise", data={"feedback": "Shorten it."})
+    assert response.status_code == 409
+    app_module.RUNS.pop("run-p", None)
+
+
+def test_revise_starts_background_and_updates_run_state(tmp_path, monkeypatch):
+    run_dir = _make_run("run-q", tmp_path)
+    (run_dir / "content.json").write_text('{"summary": "x"}')
+    (run_dir / "output.pdf").write_bytes(b"%PDF-1.4 fake")
+    monkeypatch.setattr(app_module, "_run_revision", lambda *a, **kw: None)
+
+    response = client.post("/api/tailor/run-q/revise", data={"feedback": "Shorten the summary."})
+    assert response.status_code == 200
+    assert response.json() == {"run_id": "run-q"}
+    run = app_module.RUNS["run-q"]
+    assert run["revising"] is True
+    assert run["revision_count"] == 1
+    assert run["done"] is False
+    assert run["error"] is None
+    app_module.RUNS.pop("run-q", None)
+
+
+def test_revise_clears_stale_error_file(tmp_path, monkeypatch):
+    run_dir = _make_run("run-r", tmp_path)
+    (run_dir / "content.json").write_text("{}")
+    (run_dir / "output.pdf").write_bytes(b"%PDF-1.4 fake")
+    (run_dir / "error.txt").write_text("stale error from a previous failed revision")
+    monkeypatch.setattr(app_module, "_run_revision", lambda *a, **kw: None)
+
+    response = client.post("/api/tailor/run-r/revise", data={"feedback": "Tweak something."})
+    assert response.status_code == 200
+    assert not (run_dir / "error.txt").exists()
+    app_module.RUNS.pop("run-r", None)
