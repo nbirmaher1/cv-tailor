@@ -5,7 +5,7 @@ description: Tailor a CV/resume to a specific job posting and render it as a sty
 
 # Tailor CV to a job posting
 
-Inputs: CV file (PDF or .docx), job description (URL, or pasted text if no URL works), optional photo file, optional candidate notes (contact/location/visa updates, extra detail not in the CV), optional output format (`pdf`/`docx`, default `pdf`) and/or explicit output paths. Ask for whatever required input is missing (notes are optional — don't block on them).
+Inputs: CV file (PDF or .docx) *or* an already-parsed content record (see step 1), job description (URL, or pasted text if no URL works), optional photo file, optional candidate notes (contact/location/visa updates, extra detail not in the CV), optional output format (`pdf`/`docx`, default `pdf`) and/or explicit output paths. Ask for whatever required input is missing (notes are optional — don't block on them).
 
 Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`): `~/projects/cv-tailor/venv/bin/python3`. Industry standards reference: `cv-standards.md` (same directory as this file) — read it before step 4, and pass it to the review subagent in step 5.
 
@@ -13,7 +13,11 @@ Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`
 
 1. **Read the CV.** `.pdf` → Read tool directly. `.docx` → `venv/bin/python3 scripts/extract_docx.py <path>`.
 
+   If the caller instead points you at an already-parsed content record (the web app does this once a candidate has saved a master CV — no raw CV file is given), skip this step and step 3's extraction entirely: read that record directly and treat it as step 3's output.
+
 2. **Get the job description.** URL → WebFetch. If it fails, returns near-nothing, or looks like a login wall (common on LinkedIn/ATS pages), ask the user to paste the text instead — don't guess at job content. Pasted text → use as-is.
+
+   If the caller also gave a metadata JSON path (the web app does, so it can file the result under a company/role folder), determine the company name and role/title from the job posting now, respecting any override the caller already gave verbatim, and write `{"company_name": "", "role_name": ""}` there. Leave a field `""` if it genuinely can't be determined — never guess a plausible-looking name.
 
 3. **Extract the CV into a canonical JSON content record** (single source of truth for both output formats; preserve the CV's actual section structure rather than forcing it into fixed buckets):
 
@@ -46,7 +50,7 @@ Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`
    - `summary`: 3-4 tight sentences — mirror the JD's title/domain, name genuinely-supported competencies from the JD list, include one concrete proof point (metric/scale/outcome) from the CV.
    - Judge every role and bullet against this job: **core** (keep, lead with it), **tangential** (keep trimmed), **irrelevant** (cut entirely). Cut whole irrelevant roles when other material covers the page.
    - **Bullet caps: 3-5 for core roles, 1-2 for tangential/older roles.** Rank by fit, cut to the cap — don't keep a bullet for being impressive if it's not a strong match.
-   - **Merge bullets that describe the same underlying work** (e.g. building a dashboard and its adoption) into one stronger bullet — never keep both, even if worded differently.
+   - **Zero tolerance for duplicate bullets.** For every role, compare each bullet against every other bullet in that same role: do they reference the same underlying deliverable, project, or system — even if described from a different angle (e.g. one about *building/creating* it, another about *owning/driving/scaling* it)? That's one achievement, not two. Merge into a single bullet using the strongest verb and metric from either — never split one real accomplishment across two bullets just to fill space. A duplicate isn't a harmless repeat; it silently costs the role a slot that should hold a *different* relevant achievement, so treat catching one as freeing up real estate, not just tidying.
    - Do relevance-based cutting first; tighten wording for space only after that.
    - **Every surviving bullet is an achievement, not a duty**: strong action verb (never "Responsible for"/"Worked on"), "achieved X by doing Y" shape, exact metrics from the source (never invented or rounded up). Cut bullets with no impact and no JD relevance. Translate technical detail into business impact only where the source states that outcome.
    - **Hard cap: ~2 rendered lines per bullet (~180-200 chars / 28-32 words).** Condense long source bullets/narrative paragraphs to fit rather than carrying them over verbatim.
@@ -57,7 +61,8 @@ Project root: `~/projects/cv-tailor`. Venv (`playwright`, `python-docx`, `pypdf`
 5. **Independent review.** Use the Agent tool (`subagent_type: general-purpose`, foreground) with a self-contained prompt: full original CV text, full JD text, any candidate notes, the draft JSON, and the contents of `cv-standards.md`. Ask it to check and report `PASS` or a specific, quoted, actionable fix list for:
    - **Accuracy**: every claim traceable to the CV or notes; flag anything added/exaggerated/unsupported, including JD phrasing that overstates what the original bullet said.
    - **Relevance/selection**: ignored JD requirements the CV had material for; generic filler rewrites; for master-CV sources, low-relevance content kept/under-trimmed while stronger material got cut.
-   - **Bullet quality/caps**: duty-framing, no-impact bullets, anything that'll wrap past 2 lines, roles over their cap, Skills over ~20 items/5 categories/with parenthetical scope, duplicate bullets covering the same work.
+   - **Bullet quality/caps**: duty-framing, no-impact bullets, anything that'll wrap past 2 lines, roles over their cap, Skills over ~20 items/5 categories/with parenthetical scope.
+   - **Duplicate bullets — a mandatory, explicit check, not optional feedback.** For every role with 2+ bullets, the reviewer must directly compare each bullet against every other bullet in that role and state whether any pair covers the same underlying deliverable/project/system, even when phrased very differently (e.g. "built X" vs. "owned X" vs. "drove adoption of X" — all the same X). Any such pair is a required fix: specify exactly which bullets to merge and what the merged bullet should say. This check must be performed and its result stated even when everything else passes — do not let it get absorbed into a general "bullet quality" skim.
    - **Standards compliance** (per `cv-standards.md`): length matches the candidate's years of relevant experience (1 page under 10 years, exactly 2 at 10+, never a ~1.5-page spill); skills are demonstrated in bullets rather than only listed; the summary is genuinely re-tailored to this posting, not generic.
    - **Completeness (of what's relevant, not the whole source)**: contact info or still-relevant sections missing; notes not reflected. Intentional dropping of low-relevance content from a long source is expected, not a completeness bug — only flag a drop that removed the CV's only evidence for an explicit JD requirement.
    

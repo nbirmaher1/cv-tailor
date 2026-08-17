@@ -18,6 +18,7 @@ What actually gets a CV parsed correctly by an ATS and read past a recruiter's 6
 ## Content quality (this is what you actively apply)
 - **Skills-based, not credential-based**: don't just list a tool in the Skills section — prove it inside an achievement bullet wherever the CV supports it. Skills is a supplement, not the primary evidence.
 - **Every bullet: action verb + what you did + measurable outcome** (%, $, time, volume, headcount). "Responsible for managing client accounts" is a duty; "Increased retention 22% through data-driven account management" is an achievement. Cut bullets that can't be rewritten this way and don't serve the job posting.
+- **No two bullets in the same role may cover the same underlying deliverable**, even when worded from different angles (e.g. "built the analytics dashboard" and "owned the analytics dashboard, driving adoption" are the *same* achievement, not two). Each duplicate wastes a bullet slot that could hold different, genuinely relevant material — merge into the single strongest version instead.
 - **The professional summary must be re-tailored every time** — mirror the target title, name the competencies this specific posting asks for, never reuse generic filler.
 - **Cut irrelevant or early-career roles** that don't add value to this specific application — a focused, shorter CV beats a complete-but-unfocused one.
 - Weave the job posting's real terminology into bullets themselves, not just a keyword dump in Skills — only where the CV genuinely backs it up.
