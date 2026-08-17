@@ -5,9 +5,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as app_module
+import db
+import routes_master_cv
 from app import _classify_event, _read_rationale, _sanitize_filename, _sweep_stale_runs
 
 client = TestClient(app_module.app)
+
+CURRENT_USER_ID = None
+
+SAMPLE_MASTER_CV = {
+    "full_name": "Jane Doe", "target_title": "Data Analyst", "email": "jane@example.com",
+    "phone": "", "location": "Berlin, Germany", "links": "", "work_authorization": "",
+    "photo_path": None, "summary": "Experienced analyst.",
+    "experience": [], "education": [], "skills": [], "languages": [], "extra_sections": [],
+}
 
 
 @pytest.fixture(autouse=True)
@@ -17,8 +28,40 @@ def _isolate_runs_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "RUNS_DIR", tmp_path)
 
 
-def _cv_file():
-    return {"cv_file": ("cv.pdf", b"%PDF-1.4 fake pdf content", "application/pdf")}
+@pytest.fixture(autouse=True)
+def _isolate_db(tmp_path, monkeypatch):
+    # Redirect the account/session DB into a fresh temp file per test so tests
+    # never touch the project's real data/cvtailor.db.
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
+    db.init_db()
+    monkeypatch.setattr(routes_master_cv, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(app_module, "DATA_DIR", tmp_path / "data")
+
+
+def _seed_master_cv(user_id):
+    cv_dir = routes_master_cv.master_cv_dir(user_id)
+    cv_dir.mkdir(parents=True, exist_ok=True)
+    (cv_dir / "content.json").write_text(json.dumps(SAMPLE_MASTER_CV))
+    db.touch_master_cv(user_id)
+
+
+@pytest.fixture(autouse=True)
+def _logged_in_user(_isolate_db):
+    # Every /api/tailor/* route requires a logged-in user with a saved master
+    # CV; register+log in a fresh test account per test (letting the
+    # TestClient's cookie jar carry the session across requests) and seed a
+    # master CV by default, since almost every test here exercises /start.
+    global CURRENT_USER_ID
+    resp = client.post(
+        "/api/auth/register",
+        json={"email": "test-user@example.com", "password": "testpassword123"},
+    )
+    assert resp.status_code == 200
+    CURRENT_USER_ID = resp.json()["user"]["id"]
+    _seed_master_cv(CURRENT_USER_ID)
+    yield CURRENT_USER_ID
+    client.cookies.clear()
+    CURRENT_USER_ID = None
 
 
 # -- _sanitize_filename --------------------------------------------------
@@ -69,14 +112,14 @@ def test_classify_event_maps_web_search():
 # -- /api/tailor/start ------------------------------------------------------
 
 def test_start_requires_job_url_or_text():
-    response = client.post("/api/tailor/start", files=_cv_file(), data={"output_format": "pdf"})
+    response = client.post("/api/tailor/start", data={"output_format": "pdf"})
     assert response.status_code == 400
     assert "job posting" in response.json()["detail"].lower()
 
 
 def test_start_rejects_invalid_output_format():
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={"job_text": "We need a data analyst.", "output_format": "epub"},
     )
     assert response.status_code == 400
@@ -84,12 +127,22 @@ def test_start_rejects_invalid_output_format():
 
 def test_start_accepts_valid_request_and_returns_run_id():
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={"job_text": "We need a data analyst.", "output_format": "pdf"},
     )
     assert response.status_code == 200
     run_id = response.json()["run_id"]
     assert run_id in app_module.RUNS
+
+
+def test_start_without_master_cv_returns_409():
+    client.cookies.clear()
+    client.post("/api/auth/register", json={"email": "no-master-cv@example.com", "password": "testpassword123"})
+    response = client.post(
+        "/api/tailor/start",
+        data={"job_text": "We need a data analyst.", "output_format": "pdf"},
+    )
+    assert response.status_code == 409
 
 
 # -- /api/tailor/{run_id}/status and /result --------------------------------
@@ -102,32 +155,11 @@ def test_result_unknown_run_id_returns_404():
     assert client.get("/api/tailor/does-not-exist/result").status_code == 404
 
 
-# -- upload validation ------------------------------------------------------
-
-def test_start_rejects_non_pdf_docx_cv():
-    response = client.post(
-        "/api/tailor/start",
-        files={"cv_file": ("cv.txt", b"plain text resume", "text/plain")},
-        data={"job_text": "We need a data analyst.", "output_format": "pdf"},
-    )
-    assert response.status_code == 400
-    assert "PDF" in response.json()["detail"]
-
-
-def test_start_rejects_oversized_cv():
-    oversized = b"x" * (app_module.MAX_CV_BYTES + 1)
-    response = client.post(
-        "/api/tailor/start",
-        files={"cv_file": ("cv.pdf", oversized, "application/pdf")},
-        data={"job_text": "We need a data analyst.", "output_format": "pdf"},
-    )
-    assert response.status_code == 400
-    assert "too large" in response.json()["detail"].lower()
-
+# -- request validation ------------------------------------------------------
 
 def test_start_rejects_oversized_job_text():
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={"job_text": "x" * (app_module.MAX_JOB_TEXT_CHARS + 1), "output_format": "pdf"},
     )
     assert response.status_code == 400
@@ -136,7 +168,7 @@ def test_start_rejects_oversized_job_text():
 
 def test_start_rejects_oversized_notes():
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={
             "job_text": "We need a data analyst.",
             "notes": "x" * (app_module.MAX_NOTES_CHARS + 1),
@@ -147,21 +179,9 @@ def test_start_rejects_oversized_notes():
     assert "too long" in response.json()["detail"].lower()
 
 
-def test_start_rejects_non_image_photo():
-    response = client.post(
-        "/api/tailor/start", files={
-            **_cv_file(),
-            "photo": ("headshot.txt", b"not an image", "text/plain"),
-        },
-        data={"job_text": "We need a data analyst.", "output_format": "pdf"},
-    )
-    assert response.status_code == 400
-    assert "JPG" in response.json()["detail"]
-
-
 def test_start_rejects_oversized_cover_letter_notes():
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={
             "job_text": "We need a data analyst.",
             "include_cover_letter": "true",
@@ -175,10 +195,8 @@ def test_start_rejects_oversized_cover_letter_notes():
 
 def test_start_rejects_invalid_cover_letter_template_extension():
     response = client.post(
-        "/api/tailor/start", files={
-            **_cv_file(),
-            "cover_letter_template": ("old_letter.exe", b"not a document", "application/octet-stream"),
-        },
+        "/api/tailor/start",
+        files={"cover_letter_template": ("old_letter.exe", b"not a document", "application/octet-stream")},
         data={"job_text": "We need a data analyst.", "include_cover_letter": "true", "output_format": "pdf"},
     )
     assert response.status_code == 400
@@ -188,7 +206,7 @@ def test_start_rejects_invalid_cover_letter_template_extension():
 def test_start_accepts_cover_letter_request(monkeypatch):
     monkeypatch.setattr(app_module, "_run_claude", lambda *a, **kw: None)
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={
             "job_text": "We need a data analyst.",
             "include_cover_letter": "true",
@@ -217,7 +235,7 @@ class _FakeThread:
 def test_start_with_intelligent_cover_letter_grants_web_search(monkeypatch):
     monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={
             "job_text": "We need a data analyst.",
             "include_cover_letter": "true",
@@ -234,7 +252,7 @@ def test_start_with_intelligent_cover_letter_grants_web_search(monkeypatch):
 def test_start_intelligent_cover_letter_ignored_without_cover_letter(monkeypatch):
     monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={
             "job_text": "We need a data analyst.",
             "include_cover_letter": "false",
@@ -251,7 +269,7 @@ def test_start_intelligent_cover_letter_ignored_without_cover_letter(monkeypatch
 def test_start_without_intelligent_cover_letter_omits_web_search(monkeypatch):
     monkeypatch.setattr(app_module.threading, "Thread", _FakeThread)
     response = client.post(
-        "/api/tailor/start", files=_cv_file(),
+        "/api/tailor/start",
         data={"job_text": "We need a data analyst.", "output_format": "pdf"},
     )
     assert response.status_code == 200
@@ -329,6 +347,7 @@ def _make_run(run_id, tmp_path, **overrides):
         "revising": False,
         "revision_count": 0,
         "cover_letter_file": run_dir / "cover_letter.pdf",
+        "user_id": CURRENT_USER_ID,
     }
     run.update(overrides)
     app_module.RUNS[run_id] = run

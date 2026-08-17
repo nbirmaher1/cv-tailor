@@ -4,6 +4,7 @@ output/*.html
 output/*.docx
 output/*.json
 runs/
+data/
 __pycache__/
 *.pyc
 .DS_Store

@@ -40,11 +40,281 @@
       </div>
       <span class="font-semibold tracking-tight">cv-tailor</span>
     </div>
-    <span class="hidden sm:inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
-      <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-      Runs locally via Claude Code
-    </span>
+    <div class="flex items-center gap-4">
+      <span class="hidden sm:inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+        Runs locally via Claude Code
+      </span>
+      <button id="nav-home-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Home</button>
+      <button id="nav-tailor-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Tailor a CV</button>
+      <button id="nav-applications-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Applications</button>
+      <button id="nav-master-cv-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">My CV</button>
+      <span id="user-email" class="hidden text-xs text-zinc-500 dark:text-zinc-400"></span>
+      <button id="logout-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Log out</button>
+    </div>
   </header>
+
+  <!-- LOGIN SCREEN -->
+  <main data-screen="login" class="hidden max-w-sm mx-auto px-6 pt-8 pb-20">
+    <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-soft ring-1 ring-zinc-900/5 dark:ring-white/10 p-6 sm:p-8">
+      <h1 class="text-xl font-semibold text-zinc-900 dark:text-white mb-6">Log in</h1>
+      <form id="login-form" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Email</label>
+          <input type="email" id="login-email" required autocomplete="username"
+                 class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm transition-all focus-ring">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Password</label>
+          <div class="relative">
+            <input type="password" id="login-password" required autocomplete="current-password"
+                   class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 pr-11 text-sm transition-all focus-ring">
+            <button type="button" id="login-password-toggle" aria-label="Show password"
+                    class="absolute inset-y-0 right-0 flex items-center px-3 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300">
+              <svg class="eye-open w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+              <svg class="eye-closed hidden w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
+            </button>
+          </div>
+        </div>
+        <div id="login-error" class="hidden rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900 px-4 py-3 text-sm text-red-600 dark:text-red-400"></div>
+        <button type="submit" class="w-full rounded-xl bg-accent hover:bg-accent-hover text-white font-semibold text-sm py-3 transition-all">Log in</button>
+      </form>
+      <p class="text-xs text-zinc-400 mt-5 text-center">No account yet? <a href="#" id="go-to-register" class="text-accent font-medium">Create one</a></p>
+    </div>
+  </main>
+
+  <!-- REGISTER SCREEN -->
+  <main data-screen="register" class="hidden max-w-sm mx-auto px-6 pt-8 pb-20">
+    <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-soft ring-1 ring-zinc-900/5 dark:ring-white/10 p-6 sm:p-8">
+      <h1 class="text-xl font-semibold text-zinc-900 dark:text-white mb-6">Create an account</h1>
+      <form id="register-form" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Email</label>
+          <input type="email" id="register-email" required autocomplete="username"
+                 class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm transition-all focus-ring">
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Password</label>
+          <div class="relative">
+            <input type="password" id="register-password" required autocomplete="new-password" minlength="8"
+                   class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 pr-11 text-sm transition-all focus-ring">
+            <button type="button" id="register-password-toggle" aria-label="Show password"
+                    class="absolute inset-y-0 right-0 flex items-center px-3 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300">
+              <svg class="eye-open w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+              <svg class="eye-closed hidden w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.45 10.45 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.523 10.523 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
+            </button>
+          </div>
+          <p class="text-xs text-zinc-400 mt-1.5">At least 8 characters.</p>
+        </div>
+        <div id="register-error" class="hidden rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900 px-4 py-3 text-sm text-red-600 dark:text-red-400"></div>
+        <button type="submit" class="w-full rounded-xl bg-accent hover:bg-accent-hover text-white font-semibold text-sm py-3 transition-all">Create account</button>
+      </form>
+      <p class="text-xs text-zinc-400 mt-5 text-center">Already have an account? <a href="#" id="go-to-login" class="text-accent font-medium">Log in</a></p>
+    </div>
+  </main>
+
+  <!-- APPLICATIONS SCREEN -->
+  <main data-screen="applications" class="hidden max-w-2xl mx-auto px-6 pt-8 pb-20">
+    <h1 class="text-2xl font-bold text-zinc-900 dark:text-white mb-6">Applications</h1>
+
+    <div id="apps-pending-section" class="hidden mb-8">
+      <p class="text-xs font-semibold text-amber-700 dark:text-amber-400 tracking-wide uppercase mb-3">Needs info</p>
+      <div id="apps-pending-list" class="space-y-3"></div>
+    </div>
+
+    <div id="apps-empty" class="hidden text-sm text-zinc-400 text-center py-10">No tailored CVs yet — head to "Tailor a CV" to get started.</div>
+    <div id="apps-tree" class="space-y-3"></div>
+  </main>
+
+  <!-- MASTER CV SCREEN -->
+  <main data-screen="master-cv" class="hidden max-w-2xl mx-auto px-6 pt-8 pb-20">
+    <h1 class="text-2xl font-bold text-zinc-900 dark:text-white mb-6">My master CV</h1>
+
+    <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-soft ring-1 ring-zinc-900/5 dark:ring-white/10 p-6 sm:p-8">
+
+      <!-- UPLOAD STATE -->
+      <div id="mcv-upload-state">
+        <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-5">Upload your CV once — we'll parse and save it so you never have to re-upload it for future tailoring runs.</p>
+
+        <div id="mcv-dropzone" tabindex="0"
+             class="group relative cursor-pointer rounded-xl border-2 border-dashed border-zinc-200 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/30 px-6 py-10 text-center transition-all duration-200 hover:border-accent hover:bg-accent-light dark:hover:bg-accent/10">
+          <input type="file" id="mcv-file-input" accept=".pdf,.docx" class="hidden">
+          <div id="mcv-dropzone-empty" class="flex flex-col items-center gap-3">
+            <p class="text-sm font-medium text-zinc-700 dark:text-zinc-200">Drag &amp; drop your CV here</p>
+            <p class="text-xs text-zinc-400">or click to browse — PDF or DOCX, up to 10 MB</p>
+          </div>
+          <div id="mcv-dropzone-filled" class="hidden flex-col items-center gap-2">
+            <p id="mcv-file-name-display" class="text-sm font-medium text-zinc-800 dark:text-zinc-100 truncate max-w-full px-4"></p>
+            <button type="button" id="mcv-file-clear" class="text-xs text-zinc-400 hover:text-red-500 transition-colors">Remove</button>
+          </div>
+        </div>
+
+        <button type="button" id="mcv-upload-btn"
+                class="w-full mt-5 rounded-xl bg-accent hover:bg-accent-hover disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:cursor-not-allowed text-white font-semibold text-sm py-3 transition-all">
+          Save my master CV
+        </button>
+        <div id="mcv-upload-error" class="hidden mt-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900 px-4 py-3 text-sm text-red-600 dark:text-red-400"></div>
+        <p id="mcv-skip-wrap" class="mt-4 text-center"><a href="#" id="mcv-skip-link" class="text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300">Skip for now — I'll upload it when I tailor a CV</a></p>
+      </div>
+
+      <!-- PARSING STATE -->
+      <div id="mcv-parsing-state" class="hidden flex-col items-center text-center py-10">
+        <div class="relative w-14 h-14 mb-6">
+          <div class="absolute inset-0 rounded-full border-4 border-zinc-100 dark:border-zinc-800"></div>
+          <div class="absolute inset-0 rounded-full border-4 border-accent border-t-transparent animate-spin"></div>
+        </div>
+        <p id="mcv-parsing-message" class="text-sm font-medium text-zinc-700 dark:text-zinc-200">Starting…</p>
+        <div class="w-full max-w-xs mt-5 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+          <div id="mcv-parsing-bar" class="h-full bg-accent rounded-full transition-all duration-500 ease-out" style="width: 3%"></div>
+        </div>
+      </div>
+
+      <!-- EDIT STATE -->
+      <div id="mcv-edit-state" class="hidden space-y-6">
+
+        <div class="grid grid-cols-2 gap-4">
+          <div><label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Full name</label>
+            <input id="mcv-full-name" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring"></div>
+          <div><label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Headline / title</label>
+            <input id="mcv-target-title" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring"></div>
+          <div><label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Email</label>
+            <input id="mcv-email" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring"></div>
+          <div><label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Phone</label>
+            <input id="mcv-phone" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring"></div>
+          <div><label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Location</label>
+            <input id="mcv-location" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring"></div>
+          <div><label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Links</label>
+            <input id="mcv-links" placeholder="portfolio, LinkedIn, GitHub…" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring"></div>
+          <div class="col-span-2"><label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Work authorization <span class="font-normal text-zinc-400">(optional)</span></label>
+            <input id="mcv-work-authorization" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring"></div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Summary</label>
+          <textarea id="mcv-summary" rows="3" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm resize-y focus-ring"></textarea>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Photo <span class="font-normal text-zinc-400">(optional)</span></label>
+          <div class="flex items-center gap-3">
+            <span id="mcv-photo-status" class="text-xs text-zinc-400">No photo saved.</span>
+            <input type="file" id="mcv-photo-input" accept="image/*" class="hidden">
+            <button type="button" id="mcv-photo-upload-btn" class="text-xs font-medium text-accent">Upload photo</button>
+            <button type="button" id="mcv-photo-remove-btn" class="hidden text-xs font-medium text-red-500">Remove</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">Experience</label>
+            <button type="button" id="mcv-add-experience" class="text-xs font-medium text-accent">+ Add role</button>
+          </div>
+          <div id="mcv-experience-list" class="space-y-4"></div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">Education</label>
+            <button type="button" id="mcv-add-education" class="text-xs font-medium text-accent">+ Add entry</button>
+          </div>
+          <div id="mcv-education-list" class="space-y-4"></div>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">Skills</label>
+            <button type="button" id="mcv-add-skill-group" class="text-xs font-medium text-accent">+ Add group</button>
+          </div>
+          <div id="mcv-skills-list" class="space-y-4"></div>
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1.5">Languages <span class="font-normal text-zinc-400">(one per line)</span></label>
+          <textarea id="mcv-languages" rows="2" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm resize-y focus-ring"></textarea>
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <label class="text-xs font-semibold text-zinc-500 dark:text-zinc-400">Other sections <span class="font-normal text-zinc-400">(certifications, projects, publications…)</span></label>
+            <button type="button" id="mcv-add-extra-section" class="text-xs font-medium text-accent">+ Add section</button>
+          </div>
+          <div id="mcv-extra-sections-list" class="space-y-4"></div>
+        </div>
+
+        <div id="mcv-save-error" class="hidden rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900 px-4 py-3 text-sm text-red-600 dark:text-red-400"></div>
+        <div id="mcv-save-success" class="hidden rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-900 px-4 py-3 text-sm text-emerald-600 dark:text-emerald-400">Saved.</div>
+
+        <div class="flex items-center justify-between pt-2">
+          <button type="button" id="mcv-replace-btn" class="text-xs text-zinc-400 hover:text-red-500 transition-colors">Replace CV entirely…</button>
+          <button type="button" id="mcv-save-btn" class="rounded-xl bg-accent hover:bg-accent-hover text-white font-semibold text-sm px-6 py-2.5 transition-all">Save changes</button>
+        </div>
+      </div>
+
+      <!-- SAVED STATE (first-time upload / replace only) -->
+      <div id="mcv-saved-state" class="hidden flex-col items-center text-center py-10">
+        <div class="w-14 h-14 rounded-full bg-emerald-50 dark:bg-emerald-950/40 flex items-center justify-center mb-5">
+          <svg class="w-7 h-7 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+          </svg>
+        </div>
+        <p class="text-base font-semibold text-zinc-900 dark:text-white">Your master CV is saved</p>
+        <p class="text-sm text-zinc-400 mt-1 max-w-sm">You won't need to upload it again — every future tailoring run starts from this.</p>
+        <div class="flex flex-col sm:flex-row gap-3 mt-7 w-full max-w-sm">
+          <button type="button" id="mcv-saved-tailor-btn" class="flex-1 rounded-xl bg-accent hover:bg-accent-hover text-white font-semibold text-sm py-3 transition-all">Tailor a CV</button>
+          <button type="button" id="mcv-saved-edit-btn" class="flex-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 font-semibold text-sm py-3 transition-all">Keep working on my CV</button>
+        </div>
+        <button type="button" id="mcv-saved-home-btn" class="mt-4 text-xs text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors">Go to home page</button>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- HOME SCREEN -->
+  <main data-screen="home" class="hidden max-w-2xl mx-auto px-6 pt-8 pb-20">
+
+    <!-- Snapshot -->
+    <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-soft ring-1 ring-zinc-900/5 dark:ring-white/10 p-6 sm:p-8 mb-8">
+      <div class="flex items-start gap-4">
+        <img id="home-photo" class="hidden w-16 h-16 rounded-full object-cover shrink-0" alt="">
+        <div id="home-avatar" class="hidden w-16 h-16 rounded-full bg-accent-light dark:bg-accent/20 text-accent font-bold text-xl flex items-center justify-center shrink-0"></div>
+        <div class="min-w-0">
+          <h1 id="home-name" class="text-xl font-bold text-zinc-900 dark:text-white truncate"></h1>
+          <p id="home-title" class="hidden text-sm text-zinc-500 dark:text-zinc-400 mt-0.5"></p>
+          <p id="home-contact" class="hidden text-xs text-zinc-400 mt-1.5"></p>
+        </div>
+      </div>
+      <p id="home-summary" class="hidden text-sm text-zinc-600 dark:text-zinc-300 mt-4 leading-relaxed"></p>
+
+      <div class="flex flex-wrap gap-3 mt-6">
+        <button type="button" id="home-tailor-btn" class="rounded-xl bg-accent hover:bg-accent-hover text-white font-semibold text-sm px-5 py-2.5 transition-all">Tailor a CV</button>
+        <button type="button" id="home-edit-cv-btn" class="rounded-xl bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 font-semibold text-sm px-5 py-2.5 transition-all">Edit my CV</button>
+      </div>
+    </div>
+
+    <!-- Applications -->
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-bold text-zinc-900 dark:text-white">Recent activity</h2>
+      <a href="#" id="home-view-all-link" class="text-xs font-medium text-accent">View all applications</a>
+    </div>
+
+    <div id="home-empty" class="hidden text-sm text-zinc-400 text-center py-10 bg-white dark:bg-zinc-900 rounded-2xl ring-1 ring-zinc-900/5 dark:ring-white/10">
+      <p class="mb-4">You haven't tailored a CV yet.</p>
+      <button type="button" id="home-empty-tailor-btn" class="rounded-xl bg-accent hover:bg-accent-hover text-white font-semibold text-sm px-5 py-2.5 transition-all">Tailor a CV</button>
+    </div>
+
+    <div id="home-pending-section" class="hidden mb-6">
+      <p class="text-xs font-semibold text-amber-700 dark:text-amber-400 tracking-wide uppercase mb-3">Needs info</p>
+      <div id="home-pending-list" class="space-y-3"></div>
+    </div>
+
+    <div id="home-recent-section" class="hidden">
+      <div id="home-recent-list" class="space-y-2"></div>
+    </div>
+
+  </main>
+
+  <!-- APP SCREEN -->
+  <div data-screen="app" class="hidden">
 
   <!-- Hero -->
   <section class="max-w-2xl mx-auto px-6 pt-8 pb-10 text-center">
@@ -60,22 +330,15 @@
   <main class="max-w-2xl mx-auto px-6 pb-20">
     <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-soft ring-1 ring-zinc-900/5 dark:ring-white/10 p-6 sm:p-8">
 
-      <!-- FORM STATE -->
-      <form id="form" class="space-y-8">
+      <!-- INLINE "NO MASTER CV YET" GATE -->
+      <div id="tailor-cv-gate" class="hidden">
+        <p class="text-sm text-zinc-500 dark:text-zinc-400 mb-4">Upload your CV to get started — we'll save it so you never have to re-upload it again.</p>
 
-        <!-- Step 1: CV upload -->
-        <div>
-          <div class="flex items-center gap-2 mb-3">
-            <span class="flex items-center justify-center w-5 h-5 rounded-full bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-[11px] font-semibold">1</span>
-            <label class="text-sm font-semibold text-zinc-900 dark:text-white">Upload your CV</label>
-            <span class="text-xs text-zinc-400">PDF or Word</span>
-          </div>
-
-          <div id="dropzone" tabindex="0"
+        <div id="tcg-upload-state">
+          <div id="tcg-dropzone" tabindex="0"
                class="group relative cursor-pointer rounded-xl border-2 border-dashed border-zinc-200 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/30 px-6 py-10 text-center transition-all duration-200 hover:border-accent hover:bg-accent-light dark:hover:bg-accent/10">
-            <input type="file" id="file-input" accept=".pdf,.docx" class="hidden">
-
-            <div id="dropzone-empty" class="flex flex-col items-center gap-3">
+            <input type="file" id="tcg-file-input" accept=".pdf,.docx" class="hidden">
+            <div id="tcg-dropzone-empty" class="flex flex-col items-center gap-3">
               <svg class="w-9 h-9 text-zinc-400 group-hover:text-accent transition-colors" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 8.25 12 3.75m0 0L7.5 8.25M12 3.75v12" />
               </svg>
@@ -84,21 +347,38 @@
                 <p class="text-xs text-zinc-400 mt-1">or click to browse — PDF or DOCX, up to 10 MB</p>
               </div>
             </div>
-
-            <div id="dropzone-filled" class="hidden flex-col items-center gap-2">
-              <svg class="w-8 h-8 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
-              </svg>
-              <p id="file-name-display" class="text-sm font-medium text-zinc-800 dark:text-zinc-100 truncate max-w-full px-4"></p>
-              <button type="button" id="file-clear" class="text-xs text-zinc-400 hover:text-red-500 transition-colors">Remove</button>
+            <div id="tcg-dropzone-filled" class="hidden flex-col items-center gap-2">
+              <p id="tcg-file-name-display" class="text-sm font-medium text-zinc-800 dark:text-zinc-100 truncate max-w-full px-4"></p>
+              <button type="button" id="tcg-file-clear" class="text-xs text-zinc-400 hover:text-red-500 transition-colors">Remove</button>
             </div>
           </div>
+          <button type="button" id="tcg-upload-btn"
+                  class="w-full mt-5 rounded-xl bg-accent hover:bg-accent-hover disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:cursor-not-allowed text-white font-semibold text-sm py-3 transition-all">
+            Save my CV
+          </button>
+          <div id="tcg-upload-error" class="hidden mt-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900 px-4 py-3 text-sm text-red-600 dark:text-red-400"></div>
         </div>
 
-        <!-- Step 2: Job posting -->
+        <div id="tcg-parsing-state" class="hidden flex-col items-center text-center py-10">
+          <div class="relative w-14 h-14 mb-6">
+            <div class="absolute inset-0 rounded-full border-4 border-zinc-100 dark:border-zinc-800"></div>
+            <div class="absolute inset-0 rounded-full border-4 border-accent border-t-transparent animate-spin"></div>
+          </div>
+          <p id="tcg-parsing-message" class="text-sm font-medium text-zinc-700 dark:text-zinc-200">Starting…</p>
+          <div class="w-full max-w-xs mt-5 h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+            <div id="tcg-parsing-bar" class="h-full bg-accent rounded-full transition-all duration-500 ease-out" style="width: 3%"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FORM STATE -->
+      <form id="form" class="space-y-8">
+
+        <p class="text-xs text-zinc-400 -mb-4">Using your saved master CV — <a href="#" id="tailor-edit-master-cv-link" class="text-accent font-medium">edit it</a> if you want to update it first.</p>
+
+        <!-- Job posting -->
         <div>
           <div class="flex items-center gap-2 mb-3">
-            <span class="flex items-center justify-center w-5 h-5 rounded-full bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 text-[11px] font-semibold">2</span>
             <label class="text-sm font-semibold text-zinc-900 dark:text-white">Add the job posting</label>
           </div>
 
@@ -150,14 +430,19 @@
               <p class="text-xs text-zinc-400 mt-1.5">Defaults to "tailored_cv" if left blank.</p>
             </div>
 
-            <!-- Photo -->
-            <div>
-              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Photo <span class="font-normal text-zinc-400">(optional)</span></label>
-              <div id="photo-dropzone" tabindex="0"
-                   class="group cursor-pointer rounded-xl border-2 border-dashed border-zinc-200 dark:border-zinc-700 px-4 py-4 text-center transition-all duration-200 hover:border-accent hover:bg-accent-light dark:hover:bg-accent/10">
-                <input type="file" id="photo-input" accept="image/*" class="hidden">
-                <p id="photo-label" class="text-xs text-zinc-400 group-hover:text-accent transition-colors">Drag &amp; drop a photo, or click to choose one — up to 5 MB</p>
+            <!-- Company / role override -->
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Company <span class="font-normal text-zinc-400">(optional)</span></label>
+                <input type="text" id="company-name" placeholder="Auto-detected from the posting"
+                       class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm placeholder:text-zinc-400 transition-all focus-ring">
               </div>
+              <div>
+                <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Role <span class="font-normal text-zinc-400">(optional)</span></label>
+                <input type="text" id="role-name" placeholder="Auto-detected from the posting"
+                       class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm placeholder:text-zinc-400 transition-all focus-ring">
+              </div>
+              <p class="col-span-2 text-xs text-zinc-400 -mt-1">Used to file this CV under the right company/role — leave blank to have it detected automatically from the job posting.</p>
             </div>
 
             <!-- Notes -->
@@ -232,7 +517,18 @@
           </svg>
         </div>
         <p class="text-base font-semibold text-zinc-900 dark:text-white">Your tailored CV is ready</p>
-        <p class="text-sm text-zinc-400 mt-1">Rewritten and reformatted for the role you targeted.</p>
+        <p id="filed-status" class="text-sm text-zinc-400 mt-1">Rewritten and reformatted for the role you targeted.</p>
+
+        <div id="pending-card" class="hidden w-full text-left mt-6 rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 p-5">
+          <p class="text-xs font-semibold text-amber-700 dark:text-amber-400 tracking-wide uppercase mb-2">Couldn't tell where to file this</p>
+          <p class="text-sm text-zinc-600 dark:text-zinc-300 mb-3">Tell us the company and role so we can save it in the right place. You can also do this later from the Applications page.</p>
+          <div class="grid grid-cols-2 gap-3">
+            <input type="text" id="pending-company-input" placeholder="Company" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring">
+            <input type="text" id="pending-role-input" placeholder="Role" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring">
+          </div>
+          <div id="pending-error" class="hidden mt-2 text-xs text-red-600 dark:text-red-400"></div>
+          <button type="button" id="pending-save-btn" class="mt-3 rounded-lg bg-accent hover:bg-accent-hover text-white font-medium text-sm px-4 py-2 transition-colors">File it</button>
+        </div>
 
         <div id="rationale-card" class="hidden w-full text-left mt-6 rounded-xl border border-zinc-100 dark:border-zinc-800 bg-zinc-50/60 dark:bg-zinc-800/30 p-5">
           <p class="text-xs font-semibold text-zinc-500 dark:text-zinc-400 tracking-wide uppercase mb-2">What we changed</p>
@@ -289,543 +585,14 @@
     <p class="text-center text-xs text-zinc-300 dark:text-zinc-600 mt-8">cv-tailor · powered by Claude</p>
   </main>
 
-<script>
-const dropzone = document.getElementById('dropzone');
-const dropzoneEmpty = document.getElementById('dropzone-empty');
-const dropzoneFilled = document.getElementById('dropzone-filled');
-const fileNameDisplay = document.getElementById('file-name-display');
-const fileInput = document.getElementById('file-input');
-const fileClear = document.getElementById('file-clear');
+  </div><!-- /app screen -->
 
-const photoDropzone = document.getElementById('photo-dropzone');
-const photoInput = document.getElementById('photo-input');
-const photoLabel = document.getElementById('photo-label');
-
-const form = document.getElementById('form');
-const submitBtn = document.getElementById('submit-btn');
-const formError = document.getElementById('form-error');
-
-const loadingState = document.getElementById('loading-state');
-const successState = document.getElementById('success-state');
-const progressBar = document.getElementById('progress-bar');
-const progressMessage = document.getElementById('progress-message');
-const cancelBtn = document.getElementById('cancel-btn');
-const downloadBtn = document.getElementById('download-btn');
-const downloadLabel = document.getElementById('download-label');
-const downloadError = document.getElementById('download-error');
-const restartBtn = document.getElementById('restart-btn');
-
-const rationaleCard = document.getElementById('rationale-card');
-const rationaleSummary = document.getElementById('rationale-summary');
-const rationaleChanges = document.getElementById('rationale-changes');
-const rationaleReview = document.getElementById('rationale-review');
-const rationaleReviewText = document.getElementById('rationale-review-text');
-
-const previewWrap = document.getElementById('preview-wrap');
-const previewLoading = document.getElementById('preview-loading');
-const previewFrame = document.getElementById('preview-frame');
-const previewFallback = document.getElementById('preview-fallback');
-
-const docTabs = document.getElementById('doc-tabs');
-const docTabCv = document.getElementById('doc-tab-cv');
-const docTabCoverLetter = document.getElementById('doc-tab-cover-letter');
-
-const reviseInput = document.getElementById('revise-input');
-const reviseBtn = document.getElementById('revise-btn');
-const reviseError = document.getElementById('revise-error');
-const reviseHint = document.getElementById('revise-hint');
-
-const coverLetterCheckbox = document.getElementById('cover-letter-checkbox');
-const coverLetterExtras = document.getElementById('cover-letter-extras');
-const intelligentCoverLetterCheckbox = document.getElementById('intelligent-cover-letter-checkbox');
-const coverLetterNotesInput = document.getElementById('cover-letter-notes');
-const coverLetterTemplateDropzone = document.getElementById('cover-letter-template-dropzone');
-const coverLetterTemplateInput = document.getElementById('cover-letter-template-input');
-const coverLetterTemplateLabel = document.getElementById('cover-letter-template-label');
-
-const MAX_CV_BYTES = 10 * 1024 * 1024;
-const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
-const PHOTO_DEFAULT_LABEL = 'Drag & drop a photo, or click to choose one — up to 5 MB';
-const COVER_LETTER_TEMPLATE_DEFAULT_LABEL = "Have a cover letter you've used before? Drop it here to match its style — optional, up to 10 MB";
-
-let selectedFile = null;
-let selectedPhoto = null;
-let selectedCoverLetterTemplate = null;
-let currentRunId = null;
-let currentFormat = null;
-let currentFilename = null;
-let currentCancelToken = null;
-let cachedDownloads = { cv: null, cover_letter: null };
-let isRevising = false;
-let lastRationale = null;
-let activeDocument = 'cv';
-
-function wireDropzone(zoneEl, inputEl, onSelect) {
-  zoneEl.addEventListener('click', () => inputEl.click());
-  zoneEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); inputEl.click(); }
-  });
-  inputEl.addEventListener('change', () => onSelect(inputEl.files[0] || null));
-  ['dragenter', 'dragover'].forEach(evt =>
-    zoneEl.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); zoneEl.classList.add('border-accent', 'bg-accent-light'); })
-  );
-  ['dragleave', 'drop'].forEach(evt =>
-    zoneEl.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); zoneEl.classList.remove('border-accent', 'bg-accent-light'); })
-  );
-  zoneEl.addEventListener('drop', e => {
-    const file = e.dataTransfer.files[0];
-    if (file) { inputEl.files = e.dataTransfer.files; onSelect(file); }
-  });
-}
-
-wireDropzone(dropzone, fileInput, (file) => {
-  if (file && file.size > MAX_CV_BYTES) {
-    showError('That CV is too large — please keep it under 10 MB.');
-    fileInput.value = '';
-    return;
-  }
-  clearError();
-  selectedFile = file;
-  if (file) {
-    dropzoneEmpty.classList.add('hidden');
-    dropzoneFilled.classList.remove('hidden');
-    dropzoneFilled.classList.add('flex');
-    fileNameDisplay.textContent = file.name;
-  } else {
-    dropzoneEmpty.classList.remove('hidden');
-    dropzoneFilled.classList.add('hidden');
-    dropzoneFilled.classList.remove('flex');
-  }
-});
-
-fileClear.addEventListener('click', (e) => {
-  e.stopPropagation();
-  fileInput.value = '';
-  selectedFile = null;
-  dropzoneEmpty.classList.remove('hidden');
-  dropzoneFilled.classList.add('hidden');
-  dropzoneFilled.classList.remove('flex');
-});
-
-wireDropzone(photoDropzone, photoInput, (file) => {
-  if (file && file.size > MAX_PHOTO_BYTES) {
-    showError('That photo is too large — please keep it under 5 MB.');
-    photoInput.value = '';
-    return;
-  }
-  clearError();
-  selectedPhoto = file;
-  photoLabel.textContent = file ? `Selected: ${file.name}` : PHOTO_DEFAULT_LABEL;
-  photoDropzone.classList.toggle('border-solid', !!file);
-  photoDropzone.classList.toggle('border-emerald-300', !!file);
-});
-
-coverLetterCheckbox.addEventListener('change', () => {
-  coverLetterExtras.classList.toggle('hidden', !coverLetterCheckbox.checked);
-});
-
-wireDropzone(coverLetterTemplateDropzone, coverLetterTemplateInput, (file) => {
-  if (file && file.size > MAX_CV_BYTES) {
-    showError('That file is too large — please keep it under 10 MB.');
-    coverLetterTemplateInput.value = '';
-    return;
-  }
-  clearError();
-  selectedCoverLetterTemplate = file;
-  coverLetterTemplateLabel.textContent = file ? `Selected: ${file.name}` : COVER_LETTER_TEMPLATE_DEFAULT_LABEL;
-  coverLetterTemplateDropzone.classList.toggle('border-solid', !!file);
-  coverLetterTemplateDropzone.classList.toggle('border-emerald-300', !!file);
-});
-
-function showError(message) {
-  formError.textContent = message;
-  formError.classList.remove('hidden');
-}
-function clearError() {
-  formError.classList.add('hidden');
-  formError.textContent = '';
-}
-
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  clearError();
-
-  if (!selectedFile) {
-    showError('Please choose a CV file first.');
-    return;
-  }
-  const jobUrl = document.getElementById('job-url').value.trim();
-  const jobText = document.getElementById('job-text').value.trim();
-  if (!jobUrl && !jobText) {
-    showError('Please provide a job posting URL or paste the job description.');
-    return;
-  }
-
-  const format = document.querySelector('input[name=format]:checked').value;
-  const customFilename = document.getElementById('file-name').value.trim();
-  const notes = document.getElementById('notes').value.trim();
-  const wantsCoverLetter = coverLetterCheckbox.checked;
-
-  const formData = new FormData();
-  formData.append('cv_file', selectedFile);
-  formData.append('job_url', jobUrl);
-  formData.append('job_text', jobText);
-  formData.append('output_format', format);
-  formData.append('filename', customFilename);
-  formData.append('notes', notes);
-  if (selectedPhoto) formData.append('photo', selectedPhoto);
-  formData.append('include_cover_letter', wantsCoverLetter ? 'true' : 'false');
-  if (wantsCoverLetter) {
-    formData.append('cover_letter_notes', coverLetterNotesInput.value.trim());
-    formData.append('intelligent_cover_letter', intelligentCoverLetterCheckbox.checked ? 'true' : 'false');
-    if (selectedCoverLetterTemplate) formData.append('cover_letter_template', selectedCoverLetterTemplate);
-  }
-
-  form.classList.add('hidden');
-  loadingState.classList.remove('hidden');
-  loadingState.classList.add('flex');
-  progressBar.style.width = '3%';
-  progressMessage.textContent = 'Starting…';
-
-  try {
-    const startResp = await fetch('/api/tailor/start', { method: 'POST', body: formData });
-    if (!startResp.ok) {
-      let detail = 'Request failed.';
-      try { detail = (await startResp.json()).detail || detail; } catch (_) {}
-      throw new Error(detail);
-    }
-    const { run_id } = await startResp.json();
-    currentRunId = run_id;
-    currentFormat = format;
-    currentFilename = customFilename;
-    cachedDownloads = { cv: null, cover_letter: null };
-    activeDocument = 'cv';
-    isRevising = false;
-
-    currentCancelToken = {};
-    const status = await pollUntilDone(run_id, currentCancelToken);
-    currentCancelToken = null;
-
-    downloadLabel.textContent = 'Download';
-    lastRationale = status.rationale;
-    renderRationale(status.rationale);
-    updateDocTabs(status.has_cover_letter);
-    renderPreview(run_id, format, activeDocument);
-    updateReviseUI(status.revision_count, status.max_revisions);
-
-    loadingState.classList.add('hidden');
-    loadingState.classList.remove('flex');
-    successState.classList.remove('hidden');
-    successState.classList.add('flex');
-  } catch (err) {
-    currentCancelToken = null;
-    loadingState.classList.add('hidden');
-    loadingState.classList.remove('flex');
-    form.classList.remove('hidden');
-    showError(err.message || ('Network error: ' + err));
-  } finally {
-    submitBtn.disabled = false;
-  }
-});
-
-cancelBtn.addEventListener('click', async () => {
-  if (!currentRunId || !currentCancelToken) return;
-  cancelBtn.disabled = true;
-  const token = currentCancelToken;
-  try {
-    await fetch(`/api/tailor/${currentRunId}/cancel`, { method: 'POST' });
-  } catch (_) {}
-  if (token.interval) clearInterval(token.interval);
-  const message = isRevising
-    ? 'Cancelled — kept your previous version.'
-    : 'Cancelled — no changes were made.';
-  if (token.reject) token.reject(new Error(message));
-  cancelBtn.disabled = false;
-});
-
-reviseBtn.addEventListener('click', async () => {
-  const feedback = reviseInput.value.trim();
-  reviseError.classList.add('hidden');
-  if (!feedback) {
-    reviseError.textContent = "Tell us what you'd like changed.";
-    reviseError.classList.remove('hidden');
-    return;
-  }
-  if (!currentRunId) return;
-
-  const previousRationale = lastRationale;
-  isRevising = true;
-
-  successState.classList.add('hidden');
-  successState.classList.remove('flex');
-  loadingState.classList.remove('hidden');
-  loadingState.classList.add('flex');
-  progressBar.style.width = '8%';
-  progressMessage.textContent = 'Applying your feedback…';
-
-  try {
-    const resp = await fetch(`/api/tailor/${currentRunId}/revise`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ feedback }),
-    });
-    if (!resp.ok) {
-      let detail = "Couldn't apply that change.";
-      try { detail = (await resp.json()).detail || detail; } catch (_) {}
-      throw new Error(detail);
-    }
-
-    currentCancelToken = {};
-    const status = await pollUntilDone(currentRunId, currentCancelToken);
-    currentCancelToken = null;
-    isRevising = false;
-
-    lastRationale = status.rationale;
-    cachedDownloads = { cv: null, cover_letter: null };
-    downloadLabel.textContent = 'Download';
-    renderRationale(status.rationale);
-    updateDocTabs(status.has_cover_letter);
-    renderPreview(currentRunId, currentFormat, activeDocument);
-    updateReviseUI(status.revision_count, status.max_revisions);
-    reviseInput.value = '';
-
-    loadingState.classList.add('hidden');
-    loadingState.classList.remove('flex');
-    successState.classList.remove('hidden');
-    successState.classList.add('flex');
-  } catch (err) {
-    // Whatever happened, the previous valid version is untouched -- go back to it
-    // rather than losing it, and surface what happened inline.
-    currentCancelToken = null;
-    isRevising = false;
-    renderRationale(previousRationale);
-
-    loadingState.classList.add('hidden');
-    loadingState.classList.remove('flex');
-    successState.classList.remove('hidden');
-    successState.classList.add('flex');
-
-    reviseError.textContent = err.message || "Couldn't apply that change.";
-    reviseError.classList.remove('hidden');
-  }
-});
-
-function previewUrlFor(doc) {
-  return doc === 'cv'
-    ? `/api/tailor/${currentRunId}/preview`
-    : `/api/tailor/${currentRunId}/cover-letter/preview`;
-}
-function resultUrlFor(doc) {
-  return doc === 'cv'
-    ? `/api/tailor/${currentRunId}/result`
-    : `/api/tailor/${currentRunId}/cover-letter/result`;
-}
-function downloadFilenameFor(doc) {
-  const base = currentFilename || 'tailored_cv';
-  return doc === 'cv' ? `${base}.${currentFormat}` : `${base}_cover_letter.${currentFormat}`;
-}
-
-downloadBtn.addEventListener('click', async () => {
-  downloadError.classList.add('hidden');
-  const doc = activeDocument;
-  const cached = cachedDownloads[doc];
-  if (cached) {
-    triggerDownload(cached.url, cached.filename);
-    return;
-  }
-  downloadBtn.disabled = true;
-  downloadLabel.textContent = 'Preparing…';
-  try {
-    const resultResp = await fetch(resultUrlFor(doc));
-    if (!resultResp.ok) {
-      let detail = 'Download failed.';
-      try { detail = (await resultResp.json()).detail || detail; } catch (_) {}
-      throw new Error(detail);
-    }
-    const blob = await resultResp.blob();
-    const url = URL.createObjectURL(blob);
-    const filename = downloadFilenameFor(doc);
-    cachedDownloads[doc] = { url, filename };
-    downloadLabel.textContent = `Download ${filename}`;
-    triggerDownload(url, filename);
-  } catch (err) {
-    downloadLabel.textContent = 'Download';
-    downloadError.textContent = err.message || 'Download failed.';
-    downloadError.classList.remove('hidden');
-  } finally {
-    downloadBtn.disabled = false;
-  }
-});
-
-function triggerDownload(url, filename) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-async function renderPreview(runId, format, doc) {
-  previewWrap.classList.add('hidden');
-  previewFallback.classList.add('hidden');
-  previewFrame.classList.add('hidden');
-  previewLoading.classList.remove('hidden');
-  downloadLabel.textContent = cachedDownloads[doc] ? `Download ${cachedDownloads[doc].filename}` : 'Download';
-  downloadError.classList.add('hidden');
-
-  if (format !== 'pdf') {
-    previewFallback.classList.remove('hidden');
-    return;
-  }
-
-  previewWrap.classList.remove('hidden');
-  try {
-    const resp = await fetch(previewUrlFor(doc));
-    if (!resp.ok) throw new Error('Preview unavailable.');
-    const blob = await resp.blob();
-    const oldSrc = previewFrame.src;
-    previewFrame.src = URL.createObjectURL(blob);
-    if (oldSrc) URL.revokeObjectURL(oldSrc);
-    previewLoading.classList.add('hidden');
-    previewFrame.classList.remove('hidden');
-  } catch (_) {
-    previewWrap.classList.add('hidden');
-    previewFallback.classList.remove('hidden');
-  }
-}
-
-const DOC_TAB_ACTIVE_CLASSES = ['bg-white', 'dark:bg-zinc-700', 'text-zinc-900', 'dark:text-white', 'shadow-sm'];
-const DOC_TAB_INACTIVE_CLASSES = ['text-zinc-500', 'dark:text-zinc-400'];
-
-function updateDocTabStyles() {
-  docTabCv.classList.remove(...DOC_TAB_ACTIVE_CLASSES, ...DOC_TAB_INACTIVE_CLASSES);
-  docTabCoverLetter.classList.remove(...DOC_TAB_ACTIVE_CLASSES, ...DOC_TAB_INACTIVE_CLASSES);
-  docTabCv.classList.add(...(activeDocument === 'cv' ? DOC_TAB_ACTIVE_CLASSES : DOC_TAB_INACTIVE_CLASSES));
-  docTabCoverLetter.classList.add(...(activeDocument === 'cover_letter' ? DOC_TAB_ACTIVE_CLASSES : DOC_TAB_INACTIVE_CLASSES));
-}
-
-function updateDocTabs(hasCoverLetter) {
-  docTabs.classList.toggle('hidden', !hasCoverLetter);
-  if (!hasCoverLetter) activeDocument = 'cv';
-  updateDocTabStyles();
-}
-
-function switchDocument(doc) {
-  if (doc === activeDocument) return;
-  activeDocument = doc;
-  updateDocTabStyles();
-  renderPreview(currentRunId, currentFormat, doc);
-}
-
-docTabCv.addEventListener('click', () => switchDocument('cv'));
-docTabCoverLetter.addEventListener('click', () => switchDocument('cover_letter'));
-
-function updateReviseUI(revisionCount, maxRevisions) {
-  const remaining = maxRevisions - revisionCount;
-  reviseError.classList.add('hidden');
-  if (remaining <= 0) {
-    reviseHint.textContent = `You've used all ${maxRevisions} revisions for this CV — start a new tailoring run for further changes.`;
-    reviseInput.disabled = true;
-    reviseBtn.disabled = true;
-  } else {
-    reviseHint.textContent = `${remaining} revision${remaining === 1 ? '' : 's'} left for this CV.`;
-    reviseInput.disabled = false;
-    reviseBtn.disabled = false;
-  }
-}
-
-restartBtn.addEventListener('click', () => {
-  successState.classList.add('hidden');
-  successState.classList.remove('flex');
-  form.classList.remove('hidden');
-  form.reset();
-  fileClear.click();
-  photoInput.value = '';
-  selectedPhoto = null;
-  photoLabel.textContent = PHOTO_DEFAULT_LABEL;
-  photoDropzone.classList.remove('border-solid', 'border-emerald-300');
-  rationaleCard.classList.add('hidden');
-  downloadError.classList.add('hidden');
-
-  coverLetterExtras.classList.add('hidden');
-  coverLetterTemplateInput.value = '';
-  selectedCoverLetterTemplate = null;
-  coverLetterTemplateLabel.textContent = COVER_LETTER_TEMPLATE_DEFAULT_LABEL;
-  coverLetterTemplateDropzone.classList.remove('border-solid', 'border-emerald-300');
-
-  for (const doc of ['cv', 'cover_letter']) {
-    if (cachedDownloads[doc]) URL.revokeObjectURL(cachedDownloads[doc].url);
-  }
-  cachedDownloads = { cv: null, cover_letter: null };
-  activeDocument = 'cv';
-  docTabs.classList.add('hidden');
-  if (previewFrame.src) URL.revokeObjectURL(previewFrame.src);
-  previewFrame.src = '';
-  previewWrap.classList.add('hidden');
-  previewFallback.classList.add('hidden');
-  currentRunId = null;
-  currentFormat = null;
-  currentFilename = null;
-  isRevising = false;
-  lastRationale = null;
-  reviseInput.value = '';
-  reviseInput.disabled = false;
-  reviseBtn.disabled = false;
-  reviseError.classList.add('hidden');
-});
-
-function renderRationale(rationale) {
-  if (!rationale || (!rationale.summary && !(rationale.changes || []).length)) {
-    rationaleCard.classList.add('hidden');
-    return;
-  }
-  rationaleSummary.textContent = rationale.summary || '';
-  rationaleSummary.classList.toggle('hidden', !rationale.summary);
-
-  rationaleChanges.innerHTML = '';
-  for (const change of (rationale.changes || [])) {
-    const li = document.createElement('li');
-    li.className = 'flex items-start gap-2 text-sm text-zinc-600 dark:text-zinc-300';
-    li.innerHTML = '<span class="mt-1.5 w-1 h-1 rounded-full bg-accent shrink-0"></span><span></span>';
-    li.querySelector('span:last-child').textContent = change;
-    rationaleChanges.appendChild(li);
-  }
-
-  if (rationale.review_note) {
-    rationaleReviewText.textContent = rationale.review_note;
-    rationaleReview.classList.remove('hidden');
-  } else {
-    rationaleReview.classList.add('hidden');
-  }
-
-  rationaleCard.classList.remove('hidden');
-}
-
-function pollUntilDone(runId, cancelToken) {
-  return new Promise((resolve, reject) => {
-    cancelToken.reject = reject;
-    const interval = setInterval(async () => {
-      try {
-        const resp = await fetch(`/api/tailor/${runId}/status`);
-        if (!resp.ok) throw new Error('Lost track of the tailoring job.');
-        const s = await resp.json();
-        progressBar.style.width = `${s.percent}%`;
-        progressMessage.textContent = s.step;
-        if (s.done) {
-          clearInterval(interval);
-          if (s.error) reject(new Error(s.error));
-          else resolve(s);
-        }
-      } catch (err) {
-        clearInterval(interval);
-        reject(err);
-      }
-    }, 800);
-    cancelToken.interval = interval;
-  });
-}
-</script>
+<script src="/static/js/common.js"></script>
+<script src="/static/js/tailor.js"></script>
+<script src="/static/js/master-cv.js"></script>
+<script src="/static/js/applications.js"></script>
+<script src="/static/js/home.js"></script>
+<script src="/static/js/auth.js"></script>
 
 </body>
 </html>
