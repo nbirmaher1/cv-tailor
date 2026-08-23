@@ -51,7 +51,7 @@ const coverLetterTemplateInput = document.getElementById('cover-letter-template-
 const coverLetterTemplateLabel = document.getElementById('cover-letter-template-label');
 
 const filedStatus = document.getElementById('filed-status');
-const pendingCard = document.getElementById('pending-card');
+const pendingFilingCard = document.getElementById('pending-card');
 const pendingCompanyInput = document.getElementById('pending-company-input');
 const pendingRoleInput = document.getElementById('pending-role-input');
 const pendingError = document.getElementById('pending-error');
@@ -407,7 +407,7 @@ restartBtn.addEventListener('click', () => {
   form.reset();
   rationaleCard.classList.add('hidden');
   downloadError.classList.add('hidden');
-  pendingCard.classList.add('hidden');
+  pendingFilingCard.classList.add('hidden');
   currentPendingId = null;
 
   coverLetterExtras.classList.add('hidden');
@@ -440,7 +440,7 @@ restartBtn.addEventListener('click', () => {
 let currentPendingId = null;
 
 function renderApplicationStatus(application) {
-  pendingCard.classList.add('hidden');
+  pendingFilingCard.classList.add('hidden');
   currentPendingId = null;
   pendingError.classList.add('hidden');
 
@@ -453,7 +453,7 @@ function renderApplicationStatus(application) {
     currentPendingId = application.pending_id;
     pendingCompanyInput.value = application.company_name || '';
     pendingRoleInput.value = application.role_name || '';
-    pendingCard.classList.remove('hidden');
+    pendingFilingCard.classList.remove('hidden');
     return;
   }
   filedStatus.textContent = `Saved to ${application.company_name} → ${application.role_name} — ${formatDate(application.created_at)}`;
@@ -475,7 +475,7 @@ pendingSaveBtn.addEventListener('click', async () => {
       company_name: companyName, role_name: roleName,
     });
     filedStatus.textContent = `Saved to ${companyName} → ${roleName}`;
-    pendingCard.classList.add('hidden');
+    pendingFilingCard.classList.add('hidden');
     currentPendingId = null;
   } catch (err) {
     pendingError.textContent = err.message || 'Could not file this application.';

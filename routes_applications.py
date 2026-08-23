@@ -74,6 +74,10 @@ class ResolvePending(BaseModel):
     role_name: str
 
 
+class ApplyAttempt(BaseModel):
+    attempt_id: int
+
+
 # -- filed applications ---------------------------------------------------------
 
 @router.get("")
@@ -86,6 +90,30 @@ def _get_owned_attempt(attempt_id: int, user_id: int):
     if attempt is None:
         raise HTTPException(404, "Unknown attempt.")
     return attempt
+
+
+def _get_owned_application(application_id: int, user_id: int):
+    application = db.find_application_by_id(application_id, user_id)
+    if application is None:
+        raise HTTPException(404, "Unknown application.")
+    return application
+
+
+@router.post("/{application_id}/apply")
+def apply_application(application_id: int, body: ApplyAttempt, user=Depends(auth.get_current_user)):
+    _get_owned_application(application_id, user["id"])
+    attempt = _get_owned_attempt(body.attempt_id, user["id"])
+    if attempt["application_id"] != application_id:
+        raise HTTPException(400, "That tailored CV doesn't belong to this company/role.")
+    db.mark_application_applied(application_id, body.attempt_id)
+    return {"ok": True}
+
+
+@router.delete("/{application_id}/apply")
+def unapply_application(application_id: int, user=Depends(auth.get_current_user)):
+    _get_owned_application(application_id, user["id"])
+    db.unmark_application_applied(application_id)
+    return {"ok": True}
 
 
 @router.get("/attempts/{attempt_id}/result")

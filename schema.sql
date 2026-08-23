@@ -32,7 +32,11 @@ CREATE TABLE IF NOT EXISTS applications (
   company_slug TEXT NOT NULL,
   role_name TEXT NOT NULL,
   role_slug TEXT NOT NULL,
-  status TEXT,                          -- reserved for future applied/interviewing/offer tracking; unused today
+  status TEXT,                          -- NULL, or 'applied' (moved to the Applications tab); more values
+                                         -- (interviewing/rejected/offer) reserved for future tracking
+  applied_attempt_id INTEGER REFERENCES application_attempts(id) ON DELETE SET NULL,
+                                         -- which tailored CV was actually used to apply, when status='applied'
+  applied_at TEXT,                      -- when it was moved to the Applications tab; NULL until then
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE(user_id, company_slug, role_slug)
 );

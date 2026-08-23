@@ -8,6 +8,7 @@ const navHomeBtn = document.getElementById('nav-home-btn');
 const navTailorBtn = document.getElementById('nav-tailor-btn');
 const navMasterCvBtn = document.getElementById('nav-master-cv-btn');
 const navApplicationsBtn = document.getElementById('nav-applications-btn');
+const navAppliedBtn = document.getElementById('nav-applied-btn');
 
 const loginForm = document.getElementById('login-form');
 const loginEmail = document.getElementById('login-email');
@@ -29,6 +30,7 @@ function onLoggedIn(user) {
   navTailorBtn.classList.remove('hidden');
   navMasterCvBtn.classList.remove('hidden');
   navApplicationsBtn.classList.remove('hidden');
+  navAppliedBtn.classList.remove('hidden');
   setHasMasterCV(user.has_master_cv);
 
   if (user.has_master_cv) {
@@ -51,6 +53,7 @@ function onLoggedOut() {
   navTailorBtn.classList.add('hidden');
   navMasterCvBtn.classList.add('hidden');
   navApplicationsBtn.classList.add('hidden');
+  navAppliedBtn.classList.add('hidden');
   setHasMasterCV(null);
   loginForm.reset();
   registerForm.reset();
@@ -76,6 +79,10 @@ navMasterCvBtn.addEventListener('click', () => {
 navApplicationsBtn.addEventListener('click', () => {
   showScreen('applications');
   if (window.loadApplicationsScreen) window.loadApplicationsScreen();
+});
+navAppliedBtn.addEventListener('click', () => {
+  showScreen('applied');
+  if (window.loadAppliedScreen) window.loadAppliedScreen();
 });
 
 async function boot() {

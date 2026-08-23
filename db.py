@@ -40,6 +40,24 @@ def _conn():
 def init_db() -> None:
     with _conn() as conn:
         conn.executescript(SCHEMA_PATH.read_text())
+    _migrate_applications_columns()
+
+
+# schema.sql's CREATE TABLE IF NOT EXISTS is a no-op against a database that
+# already has an `applications` table from before one of these columns
+# existed -- add each by hand for anyone upgrading an existing local install.
+_APPLICATIONS_COLUMN_MIGRATIONS = [
+    ("applied_attempt_id", "INTEGER REFERENCES application_attempts(id) ON DELETE SET NULL"),
+    ("applied_at", "TEXT"),
+]
+
+
+def _migrate_applications_columns() -> None:
+    with _conn() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(applications)")}
+        for name, ddl in _APPLICATIONS_COLUMN_MIGRATIONS:
+            if name not in columns:
+                conn.execute(f"ALTER TABLE applications ADD COLUMN {name} {ddl}")
 
 
 # -- users --------------------------------------------------------------------
@@ -176,8 +194,12 @@ def list_applications_tree(user_id: int) -> list:
                 "company_name": a["company_name"], "company_slug": a["company_slug"], "roles": [],
             })
             company["roles"].append({
+                "id": a["id"],
                 "role_name": a["role_name"],
                 "role_slug": a["role_slug"],
+                "status": a["status"],
+                "applied_attempt_id": a["applied_attempt_id"],
+                "applied_at": a["applied_at"],
                 "attempts": [
                     {
                         "id": at["id"],
@@ -189,10 +211,16 @@ def list_applications_tree(user_id: int) -> list:
                     for at in attempts
                 ],
             })
+        # attempts are already created_at DESC (see the query above), so each
+        # role's own attempts[0] is its latest -- sort roles within a company,
+        # then companies themselves, by that same "most recently tailored" key.
+        def _latest(role):
+            return role["attempts"][0]["created_at"] if role["attempts"] else ""
+
         result = list(companies.values())
-        result.sort(key=lambda c: max(
-            (r["attempts"][0]["created_at"] for r in c["roles"] if r["attempts"]), default=""
-        ), reverse=True)
+        for company in result:
+            company["roles"].sort(key=_latest, reverse=True)
+        result.sort(key=lambda c: max((_latest(r) for r in c["roles"]), default=""), reverse=True)
         return result
 
 
@@ -205,6 +233,38 @@ def get_application_attempt(attempt_id: int, user_id: int) -> "sqlite3.Row | Non
                WHERE application_attempts.id = ? AND applications.user_id = ?""",
             (attempt_id, user_id),
         ).fetchone()
+
+
+def find_application_by_id(application_id: int, user_id: int) -> "sqlite3.Row | None":
+    """Ownership-checked lookup by primary key."""
+    with _conn() as conn:
+        return conn.execute(
+            "SELECT * FROM applications WHERE id = ? AND user_id = ?", (application_id, user_id)
+        ).fetchone()
+
+
+def mark_application_applied(application_id: int, attempt_id: int) -> "sqlite3.Row | None":
+    """Records that `attempt_id` is the tailored CV actually used to apply, and
+    stamps *now* as the applied date. Safe to call again on an already-applied
+    application to switch which attempt is "the" applied one (this also
+    refreshes applied_at to now) -- callers are responsible for verifying both
+    ids belong to the same user/application first."""
+    with _conn() as conn:
+        conn.execute(
+            """UPDATE applications SET status = 'applied', applied_attempt_id = ?,
+               applied_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?""",
+            (attempt_id, application_id),
+        )
+        return conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+
+
+def unmark_application_applied(application_id: int) -> "sqlite3.Row | None":
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE applications SET status = NULL, applied_attempt_id = NULL, applied_at = NULL WHERE id = ?",
+            (application_id,),
+        )
+        return conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
 
 
 # -- pending_attempts ------------------------------------------------------------

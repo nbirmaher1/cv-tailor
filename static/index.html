@@ -47,7 +47,8 @@
       </span>
       <button id="nav-home-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Home</button>
       <button id="nav-tailor-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Tailor a CV</button>
-      <button id="nav-applications-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Applications</button>
+      <button id="nav-applications-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Tailored CVs</button>
+      <button id="nav-applied-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Applications</button>
       <button id="nav-master-cv-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">My CV</button>
       <span id="user-email" class="hidden text-xs text-zinc-500 dark:text-zinc-400"></span>
       <button id="logout-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Log out</button>
@@ -113,9 +114,9 @@
     </div>
   </main>
 
-  <!-- APPLICATIONS SCREEN -->
+  <!-- TAILORED CVS SCREEN (all CVs ever generated, whether you applied or not) -->
   <main data-screen="applications" class="hidden max-w-2xl mx-auto px-6 pt-8 pb-20">
-    <h1 class="text-2xl font-bold text-zinc-900 dark:text-white mb-6">Applications</h1>
+    <h1 class="text-2xl font-bold text-zinc-900 dark:text-white mb-6">Tailored CVs</h1>
 
     <div id="apps-pending-section" class="hidden mb-8">
       <p class="text-xs font-semibold text-amber-700 dark:text-amber-400 tracking-wide uppercase mb-3">Needs info</p>
@@ -124,6 +125,15 @@
 
     <div id="apps-empty" class="hidden text-sm text-zinc-400 text-center py-10">No tailored CVs yet — head to "Tailor a CV" to get started.</div>
     <div id="apps-tree" class="space-y-3"></div>
+  </main>
+
+  <!-- APPLICATIONS SCREEN (curated subset actually used to apply) -->
+  <main data-screen="applied" class="hidden max-w-2xl mx-auto px-6 pt-8 pb-20">
+    <h1 class="text-2xl font-bold text-zinc-900 dark:text-white mb-2">Applications</h1>
+    <p class="text-sm text-zinc-400 mb-6">CVs you've actually applied with — move one here from "Tailored CVs" once you send it.</p>
+
+    <div id="applied-empty" class="hidden text-sm text-zinc-400 text-center py-10">Nothing here yet — head to "Tailored CVs" and move one over once you've applied.</div>
+    <div id="applied-tree" class="space-y-3"></div>
   </main>
 
   <!-- MASTER CV SCREEN -->
@@ -294,7 +304,7 @@
     <!-- Applications -->
     <div class="flex items-center justify-between mb-4">
       <h2 class="text-lg font-bold text-zinc-900 dark:text-white">Recent activity</h2>
-      <a href="#" id="home-view-all-link" class="text-xs font-medium text-accent">View all applications</a>
+      <a href="#" id="home-view-all-link" class="text-xs font-medium text-accent">View all tailored CVs</a>
     </div>
 
     <div id="home-empty" class="hidden text-sm text-zinc-400 text-center py-10 bg-white dark:bg-zinc-900 rounded-2xl ring-1 ring-zinc-900/5 dark:ring-white/10">
@@ -521,7 +531,7 @@
 
         <div id="pending-card" class="hidden w-full text-left mt-6 rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 p-5">
           <p class="text-xs font-semibold text-amber-700 dark:text-amber-400 tracking-wide uppercase mb-2">Couldn't tell where to file this</p>
-          <p class="text-sm text-zinc-600 dark:text-zinc-300 mb-3">Tell us the company and role so we can save it in the right place. You can also do this later from the Applications page.</p>
+          <p class="text-sm text-zinc-600 dark:text-zinc-300 mb-3">Tell us the company and role so we can save it in the right place. You can also do this later from the Tailored CVs page.</p>
           <div class="grid grid-cols-2 gap-3">
             <input type="text" id="pending-company-input" placeholder="Company" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring">
             <input type="text" id="pending-role-input" placeholder="Role" class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-2 text-sm focus-ring">
