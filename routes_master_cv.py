@@ -234,7 +234,10 @@ actual section structure rather than forcing it into fixed buckets.
 "extra_sections": [{{"heading": "", "items": [""]}}]}}
    - `target_title`: the candidate's current/most recent headline, not tailored to anything.
    - `summary`: rewrite only for grammar/clarity if needed -- keep it the candidate's own summary,
-     not a tailored one.
+     not a tailored one. Preserve the candidate's actual word choices as closely as possible; fix
+     only genuine grammar errors. Never introduce a buzzword, cliche, or em dash (--) that wasn't
+     already there -- this record becomes the base material every future tailored summary is
+     rewritten from, so AI-sounding phrasing introduced here would propagate to every application.
    - Normalize `location` to "City, Country" (or "City, State" for the US); drop street
      address/postal code.
    - Never invent experience, skills, titles, or dates. Omit what's missing rather than fabricate.

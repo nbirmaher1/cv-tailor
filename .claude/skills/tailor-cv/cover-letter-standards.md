@@ -27,20 +27,31 @@ AI-written. Enforce every rule below on every draft.
 - **Don't mirror the job posting's own phrasing back at it.** If the JD says "fast-paced
   environment" or "passionate self-starter," never reuse those words — describe the candidate's
   actual working style in the candidate's own terms.
+- **Never use an em dash (—) anywhere in the letter.** Use a period, comma, or parentheses instead.
+  No exceptions, not even one.
 - **Cut every stock opener and closer.** Banned outright: "I am writing to express my interest,"
   "I am excited/thrilled to apply," "I am confident that my skills and experience make me an ideal
   candidate," "I look forward to the opportunity to discuss further," "please don't hesitate to
   contact me," "thank you for your time and consideration," "I would welcome the chance to."
-- **Cut AI-tell vocabulary.** Banned: "leverage," "seamless(ly)," "passionate about," "dynamic,"
-  "cutting-edge," "robust," "delve," "landscape," "furthermore," "moreover," "in today's
-  fast-paced/competitive world." Same grandiose-verb ban as `cv-standards.md` applies here too:
+- **Never use any of these — always filler, no legitimate use in a cover letter**: "cutting-edge,"
+  "seamless(ly)," "state-of-the-art," "world-class," "best-in-class," "holistic,"
+  "synergy"/"synergies," "passionate about," "delve," "landscape" (as in "the ... landscape"),
+  "furthermore," "moreover," "in today's fast-paced/competitive world," "proven track record,"
+  "results-driven," "detail-oriented," "go-getter," "self-starter," "excellent communication
+  skills," "excellent interpersonal skills," "strong work ethic," "think outside the box," "wear
+  multiple hats," "hard-working professional"/"hard-working individual," and "leverage" used as a
+  verb ("leveraged X to..."). Same grandiose-verb ban as `cv-standards.md` applies here too:
   "spearheaded," "orchestrated," "championed," "revolutionized," "pioneered," "masterminded."
-- **Vary sentence rhythm.** The default LLM tell is a symmetric rule-of-three list stitched with an
-  em dash ("X, Y, and Z — backed by a strong foundation in..."). At most one sentence in the whole
-  letter may use that shape. Mix short, plain sentences with longer ones; prefer a period over an
-  em dash more often than not.
+- **"Robust," "dynamic," and "leverage" as a noun are situational, not banned outright**: fine only
+  when stating an actual, source-backed technical property, never as vague self-description ("a
+  dynamic professional").
+- **Vary sentence rhythm.** The default LLM tell is a symmetric rule-of-three list ("X, Y, and Z,
+  backed by a strong foundation in..."). At most one sentence in the whole letter may use that
+  shape. Mix short, plain sentences with longer ones.
 - **Be direct, not hedged.** State what the candidate has done and why it's relevant, plainly.
   Cut throat-clearing qualifiers: "I believe that," "I feel that," "it's worth noting that."
+- **Contractions are fine and often read more natural** ("I've," "I'm," "don't") — don't default to
+  needlessly formal phrasing just because it's a cover letter.
 - Professional throughout, but plain and a little blunt is correct here — this is a candidate
   stating a case, not asking a favor.
 - If a style/structure reference letter was provided: match its voice and structure only — never
@@ -57,9 +68,9 @@ AI-written. Enforce every rule below on every draft.
 ## Review
 Before finalizing, review the draft against every rule above, including a dedicated voice pass:
 read it once as a hiring manager who reads dozens of these a week, and flag anything that would
-make that reader think "this was generated" — a banned phrase, a symmetric em-dash list sentence,
-flattery toward the company, or mirrored JD language — then rewrite it. Also confirm: every claim
-traceable to the content record or the candidate's notes; length within 250-400 words; if research
-was used, every company-specific claim is something actually found, not invented. This check is
-mandatory, not optional — fix whatever fails before writing the final file. One pass is enough
-given the letter's length; no multi-round loop is needed.
+make that reader think "this was generated" — any em dash, a banned phrase, a symmetric rule-of-
+three sentence, flattery toward the company, or mirrored JD language — then rewrite it. Also
+confirm: every claim traceable to the content record or the candidate's notes; length within
+250-400 words; if research was used, every company-specific claim is something actually found,
+not invented. This check is mandatory, not optional — fix whatever fails before writing the final
+file. One pass is enough given the letter's length; no multi-round loop is needed.

@@ -22,6 +22,14 @@ const formError = document.getElementById('form-error');
 
 const loadingState = document.getElementById('loading-state');
 const successState = document.getElementById('success-state');
+const failureState = document.getElementById('failure-state');
+const failureMessage = document.getElementById('failure-message');
+const failureCause = document.getElementById('failure-cause');
+const failureResumeBtn = document.getElementById('failure-resume-btn');
+const failureStartOverBtn = document.getElementById('failure-startover-btn');
+const failureDiscardBtn = document.getElementById('failure-discard-btn');
+const resumableBanner = document.getElementById('resumable-banner');
+const resumableList = document.getElementById('resumable-list');
 const progressBar = document.getElementById('progress-bar');
 const progressMessage = document.getElementById('progress-message');
 const cancelBtn = document.getElementById('cancel-btn');
@@ -189,29 +197,175 @@ form.addEventListener('submit', async (e) => {
     currentCancelToken = {};
     const status = await pollUntilDone(run_id, currentCancelToken);
     currentCancelToken = null;
-
-    downloadLabel.textContent = 'Download';
-    lastRationale = status.rationale;
-    renderRationale(status.rationale);
-    renderApplicationStatus(status.application);
-    updateDocTabs(status.has_cover_letter);
-    renderPreview(run_id, format, activeDocument);
-    updateReviseUI(status.revision_count, status.max_revisions);
-
-    loadingState.classList.add('hidden');
-    loadingState.classList.remove('flex');
-    successState.classList.remove('hidden');
-    successState.classList.add('flex');
-    setTailorWide(true);
+    showSuccess(status, run_id, format);
   } catch (err) {
     currentCancelToken = null;
     loadingState.classList.add('hidden');
     loadingState.classList.remove('flex');
-    form.classList.remove('hidden');
-    showError(err.message || ('Network error: ' + err));
+    if (err.resumable) {
+      showFailure(currentRunId, err.message, err.errorCause);
+    } else {
+      form.classList.remove('hidden');
+      showError(err.message || ('Network error: ' + err));
+    }
   } finally {
     submitBtn.disabled = false;
   }
+});
+
+function showSuccess(status, runId, format) {
+  currentRunId = runId;
+  currentFormat = format;
+  cachedDownloads = { cv: null, cover_letter: null };
+  activeDocument = 'cv';
+  downloadLabel.textContent = 'Download';
+  lastRationale = status.rationale;
+  renderRationale(status.rationale);
+  renderApplicationStatus(status.application);
+  updateDocTabs(status.has_cover_letter);
+  renderPreview(runId, format, activeDocument);
+  updateReviseUI(status.revision_count, status.max_revisions);
+
+  loadingState.classList.add('hidden');
+  loadingState.classList.remove('flex');
+  failureState.classList.add('hidden');
+  failureState.classList.remove('flex');
+  successState.classList.remove('hidden');
+  successState.classList.add('flex');
+  setTailorWide(true);
+}
+
+let failureRunId = null;
+
+function showFailure(runId, message, cause) {
+  failureRunId = runId;
+  failureMessage.textContent = message || 'Something went wrong';
+  failureCause.textContent = cause || '';
+  failureCause.classList.toggle('hidden', !cause);
+  form.classList.add('hidden');
+  loadingState.classList.add('hidden');
+  loadingState.classList.remove('flex');
+  successState.classList.add('hidden');
+  successState.classList.remove('flex');
+  setTailorWide(false);
+  failureState.classList.remove('hidden');
+  failureState.classList.add('flex');
+}
+
+function showLoading(message) {
+  form.classList.add('hidden');
+  failureState.classList.add('hidden');
+  failureState.classList.remove('flex');
+  successState.classList.add('hidden');
+  successState.classList.remove('flex');
+  setTailorWide(false);
+  loadingState.classList.remove('hidden');
+  loadingState.classList.add('flex');
+  progressBar.style.width = '8%';
+  progressMessage.textContent = message || 'Resuming…';
+}
+
+async function resumeRun(runId) {
+  try {
+    const resp = await apiFetch(`/api/tailor/${runId}/resume`, { method: 'POST' });
+    if (!resp.ok) {
+      let detail = "Couldn't resume this run.";
+      try { detail = (await resp.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+  } catch (err) {
+    showFailure(runId, err.message || "Couldn't resume this run.", null);
+    return;
+  }
+  showLoading('Resuming…');
+  currentCancelToken = {};
+  try {
+    const status = await pollUntilDone(runId, currentCancelToken);
+    currentCancelToken = null;
+    currentFilename = status.download_name || '';
+    showSuccess(status, runId, status.output_format);
+  } catch (err) {
+    currentCancelToken = null;
+    if (err.resumable) showFailure(runId, err.message, err.errorCause);
+    else { form.classList.remove('hidden'); loadingState.classList.add('hidden'); loadingState.classList.remove('flex'); showError(err.message); }
+  }
+}
+
+async function discardRun(runId) {
+  try { await apiFetch(`/api/tailor/${runId}/discard`, { method: 'POST' }); } catch (_) {}
+}
+
+failureResumeBtn.addEventListener('click', () => { if (failureRunId) resumeRun(failureRunId); });
+failureDiscardBtn.addEventListener('click', async () => {
+  if (!failureRunId) return;
+  await discardRun(failureRunId);
+  failureRunId = null;
+  failureState.classList.add('hidden');
+  failureState.classList.remove('flex');
+  form.classList.remove('hidden');
+  loadResumableRuns();
+});
+failureStartOverBtn.addEventListener('click', () => {
+  failureRunId = null;
+  failureState.classList.add('hidden');
+  failureState.classList.remove('flex');
+  form.classList.remove('hidden');
+});
+
+// Interrupted/failed runs the user can pick back up (e.g. after a restart or a usage-limit
+// failure) -- surfaced as a banner on the tailor input screen, since a page reload loses
+// the in-memory run_id the poll flow would otherwise use.
+async function loadResumableRuns() {
+  if (!resumableBanner) return;
+  let runs = [];
+  try {
+    const resp = await apiFetch('/api/tailor/resumable');
+    if (resp.ok) runs = (await resp.json()).runs || [];
+  } catch (_) { /* leave the banner hidden on any error */ }
+
+  resumableList.innerHTML = '';
+  resumableBanner.classList.toggle('hidden', runs.length === 0);
+  for (const run of runs) {
+    const row = document.createElement('div');
+    row.className = 'flex items-center justify-between gap-3 text-sm';
+    const label = document.createElement('div');
+    label.className = 'min-w-0';
+    const target = (run.company_name || run.role_name)
+      ? `${run.company_name || 'Unknown company'}${run.role_name ? ' → ' + run.role_name : ''}`
+      : 'A tailoring run';
+    // textContent (not innerHTML) -- company/role come from Claude-derived metadata.
+    const targetEl = document.createElement('p');
+    targetEl.className = 'font-medium text-zinc-700 dark:text-zinc-200 truncate';
+    targetEl.textContent = target;
+    label.appendChild(targetEl);
+    if (run.error_cause) {
+      const causeEl = document.createElement('p');
+      causeEl.className = 'text-xs text-zinc-500 dark:text-zinc-400 truncate';
+      causeEl.textContent = run.error_cause;
+      label.appendChild(causeEl);
+    }
+    const actions = document.createElement('div');
+    actions.className = 'flex items-center gap-2 shrink-0';
+    const resumeBtn = document.createElement('button');
+    resumeBtn.type = 'button';
+    resumeBtn.className = 'rounded-lg bg-accent hover:bg-accent-hover text-white font-medium text-xs px-3 py-1.5 transition-colors';
+    resumeBtn.textContent = 'Resume';
+    resumeBtn.addEventListener('click', () => resumeRun(run.run_id));
+    const discardBtn = document.createElement('button');
+    discardBtn.type = 'button';
+    discardBtn.className = 'text-xs text-zinc-400 hover:text-red-500 transition-colors';
+    discardBtn.textContent = 'Discard';
+    discardBtn.addEventListener('click', async () => { await discardRun(run.run_id); loadResumableRuns(); });
+    actions.appendChild(resumeBtn);
+    actions.appendChild(discardBtn);
+    row.appendChild(label);
+    row.appendChild(actions);
+    resumableList.appendChild(row);
+  }
+}
+
+document.addEventListener('screen:shown', (e) => {
+  if (e.detail && e.detail.name === 'app') loadResumableRuns();
 });
 
 cancelBtn.addEventListener('click', async () => {
@@ -429,6 +583,7 @@ restartBtn.addEventListener('click', () => {
   successState.classList.remove('flex');
   form.classList.remove('hidden');
   setTailorWide(false);
+  loadResumableRuns();
   form.reset();
   rationaleCard.classList.add('hidden');
   downloadError.classList.add('hidden');

@@ -626,6 +626,225 @@ def test_revise_clears_stale_error_file(tmp_path, monkeypatch):
     app_module.RUNS.pop("run-r", None)
 
 
+# -- _render_cover_letter_output resilience --------------------------------------------
+
+def test_render_cover_letter_output_skips_when_content_file_missing(tmp_path, monkeypatch):
+    # A cover letter was requested (cl_output_file set) but its content record was never
+    # written -- e.g. a run interrupted partway. Must skip gracefully, not crash.
+    called = {"pdf": 0, "docx": 0}
+    monkeypatch.setattr(app_module.render_pdf, "render", lambda *a: called.__setitem__("pdf", called["pdf"] + 1))
+    monkeypatch.setattr(app_module.render_cover_letter_docx, "build", lambda *a: called.__setitem__("docx", called["docx"] + 1))
+
+    paths = {
+        "output_format": "pdf",
+        "cl_content_file": tmp_path / "cover_letter_content.json",  # deliberately not created
+        "cl_html_file": tmp_path / "cover_letter.html",
+        "cl_output_file": tmp_path / "cover_letter.pdf",
+    }
+    # Should not raise, and should not attempt any render.
+    app_module._render_cover_letter_output(paths)
+    assert called == {"pdf": 0, "docx": 0}
+
+
+def test_render_cover_letter_output_renders_when_content_file_present(tmp_path, monkeypatch):
+    rendered = {"pdf": 0}
+    monkeypatch.setattr(app_module.render_pdf, "render", lambda *a: rendered.__setitem__("pdf", rendered["pdf"] + 1))
+    monkeypatch.setattr(app_module.fill_html, "fill_cover_letter_html", lambda content: "<html></html>")
+
+    cl_content_file = tmp_path / "cover_letter_content.json"
+    cl_content_file.write_text(json.dumps({"paragraphs": ["Hello."]}))
+    paths = {
+        "output_format": "pdf",
+        "cl_content_file": cl_content_file,
+        "cl_html_file": tmp_path / "cover_letter.html",
+        "cl_output_file": tmp_path / "cover_letter.pdf",
+    }
+    app_module._render_cover_letter_output(paths)
+    assert rendered["pdf"] == 1
+
+
+# -- voice guard (em dash + banned-phrase deterministic check) -------------------------
+#
+# The deterministic backup for cv-standards.md / cover-letter-standards.md's Voice
+# sections: a free scan for an em dash or a banned phrase, with capped Claude fix rounds
+# if something's found, and a hard code-level fallback for em dash specifically (never for
+# banned phrases -- those aren't safely auto-fixable).
+
+def test_find_voice_issues_detects_em_dash_but_not_en_dash_or_hyphen():
+    content = {
+        "summary": "Data-driven analyst, 2021–2023 tenure.",  # hyphen + en dash: must NOT trigger
+        "experience": [{"bullets": ["Built a pipeline — end to end."]}],  # em dash: must trigger
+    }
+    result = app_module._find_voice_issues(content)
+    assert result["em_dash"] is True
+    assert result["phrases"] == []
+
+
+def test_find_voice_issues_ignores_clean_date_ranges_and_hyphenated_words():
+    content = {"summary": "Self-directed engineer, 2021 – Present, data-driven approach."}
+    result = app_module._find_voice_issues(content)
+    assert result["em_dash"] is False
+    assert result["phrases"] == []
+
+
+def test_find_voice_issues_finds_banned_phrases_case_insensitively():
+    content = {"summary": "A RESULTS-DRIVEN professional with a proven track record."}
+    result = app_module._find_voice_issues(content)
+    assert result["em_dash"] is False
+    assert "results-driven" in result["phrases"]
+    assert "proven track record" in result["phrases"]
+
+
+def test_find_voice_issues_does_not_flag_tier_2_situational_words():
+    content = {"experience": [{"bullets": ["Built a robust ETL pipeline with dynamic scaling."]}]}
+    result = app_module._find_voice_issues(content)
+    assert result["em_dash"] is False
+    assert result["phrases"] == []
+
+
+def test_find_voice_issues_walks_nested_lists_and_dicts():
+    content = {"skills": [{"category": "Tools", "items": ["Uses a seamless workflow"]}]}
+    result = app_module._find_voice_issues(content)
+    assert "seamless" in result["phrases"]
+
+
+def test_strip_em_dash_in_place_replaces_character_and_preserves_rest(tmp_path):
+    content_file = tmp_path / "content.json"
+    content_file.write_text(json.dumps({"summary": "Built X — then scaled it.", "full_name": "Jane Doe"}))
+
+    app_module._strip_em_dash_in_place(content_file)
+
+    data = json.loads(content_file.read_text())
+    assert "—" not in data["summary"]
+    assert data["summary"] == "Built X, then scaled it."
+    assert data["full_name"] == "Jane Doe"
+
+
+def _make_voice_guard_paths(run_dir, cl=False):
+    content_file = run_dir / "content.json"
+    content_file.write_text(json.dumps({"summary": "Clean summary."}))
+    cl_content_file = run_dir / "cover_letter_content.json"
+    if cl:
+        cl_content_file.write_text(json.dumps({"paragraphs": ["Clean paragraph."]}))
+    return {
+        "content_file": content_file,
+        "cl_content_file": cl_content_file if cl else None,
+    }
+
+
+def test_voice_guard_returns_true_immediately_when_clean_no_claude_call(tmp_path, monkeypatch):
+    app_module.RUNS["vg-1"] = {"percent": 50, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_voice_guard_paths(tmp_path)
+
+    def fail_if_called(*a, **kw):
+        raise AssertionError("no Claude call should happen when content is already clean")
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fail_if_called)
+
+    assert app_module._run_voice_guard("vg-1", tmp_path, paths) is True
+    app_module.RUNS.pop("vg-1", None)
+
+
+def test_voice_guard_fixes_em_dash_on_first_round(tmp_path, monkeypatch):
+    app_module.RUNS["vg-2"] = {"percent": 50, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_voice_guard_paths(tmp_path)
+    paths["content_file"].write_text(json.dumps({"summary": "Built X — then shipped it."}))
+
+    calls = {"n": 0}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        calls["n"] += 1
+        # Simulate Claude fixing it in place.
+        paths["content_file"].write_text(json.dumps({"summary": "Built X, then shipped it."}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_voice_guard("vg-2", tmp_path, paths)
+
+    assert result is True
+    assert calls["n"] == 1
+    assert "—" not in paths["content_file"].read_text()
+    app_module.RUNS.pop("vg-2", None)
+
+
+def test_voice_guard_em_dash_falls_back_to_deterministic_strip_at_cap(tmp_path, monkeypatch):
+    app_module.RUNS["vg-3"] = {"percent": 50, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_voice_guard_paths(tmp_path)
+    paths["content_file"].write_text(json.dumps({"summary": "Built X — then shipped it."}))
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        # Claude never actually fixes it -- em dash survives every round.
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_voice_guard("vg-3", tmp_path, paths)
+
+    assert result is True
+    data = json.loads(paths["content_file"].read_text())
+    assert "—" not in data["summary"]
+    assert data["summary"] == "Built X, then shipped it."
+    app_module.RUNS.pop("vg-3", None)
+
+
+def test_voice_guard_lingering_banned_phrase_ships_as_is_without_corrupting(tmp_path, monkeypatch, capsys):
+    app_module.RUNS["vg-4"] = {"percent": 50, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_voice_guard_paths(tmp_path)
+    original = {"summary": "A results-driven analyst with real experience."}
+    paths["content_file"].write_text(json.dumps(original))
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        # Claude never actually fixes it -- the phrase survives every round.
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_voice_guard("vg-4", tmp_path, paths)
+
+    assert result is True
+    # Content is untouched -- no unsafe auto-strip of a banned phrase.
+    assert json.loads(paths["content_file"].read_text()) == original
+    assert "results-driven" in capsys.readouterr().err
+    app_module.RUNS.pop("vg-4", None)
+
+
+def test_voice_guard_returns_false_when_fix_call_fails(tmp_path, monkeypatch):
+    app_module.RUNS["vg-5"] = {"percent": 50, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_voice_guard_paths(tmp_path)
+    paths["content_file"].write_text(json.dumps({"summary": "Built X — then shipped it."}))
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        jobs[job_id].update(done=True, error="Something went wrong on our end. Please try again.")
+        return False, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_voice_guard("vg-5", tmp_path, paths)
+
+    assert result is False
+    assert app_module.RUNS["vg-5"]["done"] is True
+    app_module.RUNS.pop("vg-5", None)
+
+
+def test_voice_guard_checks_cover_letter_content_too(tmp_path, monkeypatch):
+    app_module.RUNS["vg-6"] = {"percent": 50, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_voice_guard_paths(tmp_path, cl=True)
+    paths["cl_content_file"].write_text(json.dumps({"paragraphs": ["A seamless transition into this role."]}))
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        paths["cl_content_file"].write_text(json.dumps({"paragraphs": ["A smooth transition into this role."]}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_voice_guard("vg-6", tmp_path, paths)
+
+    assert result is True
+    assert "seamless" not in paths["cl_content_file"].read_text().lower()
+    app_module.RUNS.pop("vg-6", None)
+
+
 # -- _run_render_qa_loop ---------------------------------------------------------------
 #
 # The backend-orchestrated render + visual-QA/cut loop that replaced Claude's own
@@ -853,3 +1072,206 @@ def test_css_fit_not_attempted_when_more_than_one_page_over(tmp_path, monkeypatc
     assert result is True
     assert calls["n"] == 1
     app_module.RUNS.pop("qa-9", None)
+
+
+# -- resume / checkpoint + friendly failure causes -------------------------------------
+#
+# Durable run-state (run_state.json) lets a failed/interrupted run resume from its last
+# completed phase instead of re-running the expensive draft. These cover the app-level
+# glue: failure classification, phase selection, skipping already-done phases, startup
+# rehydration, and the sweep keeping resumable folders.
+
+import run_state as run_state_mod
+
+
+def test_classify_failure_detects_usage_limit(tmp_path):
+    tail = '{"is_error":true,"result":"You\'ve hit your session limit","api_error_status":429}'
+    cause = app_module._classify_failure(tail, tmp_path, None)
+    assert "usage limit" in cause.lower()
+
+
+def test_classify_failure_detects_blocked_url_when_no_content(tmp_path):
+    tail = "WebFetch returned 403 Forbidden (login wall)"
+    cause = app_module._classify_failure(tail, tmp_path, "https://example.com/job")
+    assert "paste" in cause.lower()
+
+
+def test_classify_failure_content_present_is_resumable_message(tmp_path):
+    (tmp_path / "content.json").write_text("{}")
+    cause = app_module._classify_failure("some unrelated crash", tmp_path, None)
+    assert "resume" in cause.lower()
+
+
+def test_classify_failure_returns_none_when_nothing_recognizable(tmp_path):
+    assert app_module._classify_failure("totally generic noise", tmp_path, None) is None
+
+
+def test_furthest_completed_phase_uses_failed_phase():
+    state = {"phase": run_state_mod.PHASE_FAILED, "failed_phase": run_state_mod.PHASE_RENDERED}
+    assert app_module._furthest_completed_phase(state) == run_state_mod.PHASE_RENDERED
+
+
+def test_furthest_completed_phase_clamps_drafting_to_drafted():
+    assert app_module._furthest_completed_phase({"phase": run_state_mod.PHASE_DRAFTING}) == run_state_mod.PHASE_DRAFTED
+
+
+def test_furthest_completed_phase_passes_through_voice_checked():
+    assert app_module._furthest_completed_phase({"phase": run_state_mod.PHASE_VOICE_CHECKED}) == run_state_mod.PHASE_VOICE_CHECKED
+
+
+def test_post_draft_resume_from_rendered_skips_voice_and_render(tmp_path, monkeypatch):
+    # Starting at 'rendered' means voice guard and the QA loop are already done -- neither
+    # should run again; only finalize should happen. This is the token/latency win.
+    app_module.RUNS["rp-1"] = {
+        "percent": 50, "step": "", "done": False, "error": None, "cancelled": False,
+        "run_dir": tmp_path, "user_id": 1,
+    }
+    (tmp_path / "content.json").write_text(json.dumps({"summary": "x"}))
+    (tmp_path / "summary.json").write_text(json.dumps({"summary": "s", "changes": []}))
+
+    def boom(*a, **kw):
+        raise AssertionError("should not re-run this phase when resuming from 'rendered'")
+
+    monkeypatch.setattr(app_module, "_run_voice_guard", boom)
+    monkeypatch.setattr(app_module, "_run_render_qa_loop", boom)
+    finalized = {"n": 0}
+    monkeypatch.setattr(app_module, "_finalize_application_run", lambda rid: finalized.__setitem__("n", finalized["n"] + 1))
+
+    app_module._run_post_draft_phases("rp-1", tmp_path, {"output_format": "pdf", "content_file": tmp_path / "content.json"}, run_state_mod.PHASE_RENDERED, True)
+
+    assert finalized["n"] == 1
+    assert app_module.RUNS["rp-1"]["done"] is True
+    assert app_module.RUNS["rp-1"]["error"] is None
+    app_module.RUNS.pop("rp-1", None)
+
+
+def test_rehydrate_interrupted_runs_lists_unfinalized_as_resumable(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "RUNS_DIR", tmp_path)
+    run_dir = tmp_path / "run-abc"
+    run_dir.mkdir()
+    run_state_mod.write_state(run_dir, {
+        "run_id": "run-abc", "user_id": 7, "output_format": "pdf", "download_name": "cv",
+        "path_names": {"output_file": "output.pdf", "content_file": "content.json", "cl_output_file": None},
+        "phase": run_state_mod.PHASE_DRAFTED,
+    })
+    app_module.RUNS.pop("run-abc", None)
+
+    app_module._rehydrate_interrupted_runs()
+
+    assert "run-abc" in app_module.RUNS
+    entry = app_module.RUNS["run-abc"]
+    assert entry["done"] is True and entry["resumable"] is True
+    assert entry["user_id"] == 7
+    assert entry["error_cause"] == app_module.INTERRUPTED_CAUSE
+    app_module.RUNS.pop("run-abc", None)
+
+
+def test_rehydrate_skips_finalized_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "RUNS_DIR", tmp_path)
+    run_dir = tmp_path / "run-fin"
+    run_dir.mkdir()
+    run_state_mod.write_state(run_dir, {"run_id": "run-fin", "phase": run_state_mod.PHASE_FINALIZED})
+
+    app_module._rehydrate_interrupted_runs()
+
+    assert "run-fin" not in app_module.RUNS
+
+
+def test_sweep_keeps_resumable_run_under_long_ttl(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "RUNS_DIR", tmp_path)
+    resumable = tmp_path / "resumable"
+    resumable.mkdir()
+    run_state_mod.write_state(resumable, {"run_id": "resumable", "phase": run_state_mod.PHASE_FAILED})
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    # Age both well past the short 2h scratch TTL but under the 7-day resumable TTL.
+    old = time.time() - (app_module.RUN_RETENTION_SECONDS + 3600)
+    import os
+    os.utime(resumable, (old, old))
+    os.utime(plain, (old, old))
+
+    app_module._sweep_stale_runs()
+
+    assert resumable.exists()      # kept: resumable, long TTL not reached
+    assert not plain.exists()      # deleted: no saved state, short TTL exceeded
+
+
+# -- resume / discard / resumable-list endpoints ---------------------------------------
+
+def test_resume_unknown_run_returns_404():
+    assert client.post("/api/tailor/nope/resume").status_code == 404
+
+
+def test_resume_non_resumable_run_returns_409(tmp_path):
+    app_module.RUNS["res-1"] = {
+        "user_id": CURRENT_USER_ID, "done": True, "resumable": False,
+        "run_dir": tmp_path, "step": "", "percent": 0, "error": None,
+    }
+    resp = client.post("/api/tailor/res-1/resume")
+    assert resp.status_code == 409
+    app_module.RUNS.pop("res-1", None)
+
+
+def test_resume_skips_draft_when_content_present(tmp_path, monkeypatch):
+    run_dir = tmp_path / "res-2"
+    run_dir.mkdir()
+    (run_dir / "content.json").write_text(json.dumps({"summary": "x"}))
+    run_state_mod.write_state(run_dir, {
+        "run_id": "res-2", "user_id": CURRENT_USER_ID, "output_format": "pdf",
+        "path_names": {"content_file": "content.json", "output_file": "output.pdf", "cl_output_file": None},
+        "phase": run_state_mod.PHASE_FAILED, "failed_phase": run_state_mod.PHASE_RENDERED,
+        "draft_prompt": "SHOULD NOT BE USED", "allowed_tools": "Read Write",
+    })
+    app_module.RUNS["res-2"] = app_module._rehydrate_run(run_dir, run_state_mod.load_state(run_dir))
+
+    seen = {"phase": None, "redraft": False}
+
+    def fake_post_draft(run_id, rd, paths, start_phase, finalize):
+        seen["phase"] = start_phase
+
+    def fake_run_claude(*a, **kw):
+        seen["redraft"] = True
+
+    monkeypatch.setattr(app_module, "_run_post_draft_phases", fake_post_draft)
+    monkeypatch.setattr(app_module, "_run_claude", fake_run_claude)
+
+    resp = client.post("/api/tailor/res-2/resume")
+    assert resp.status_code == 200
+    # Give the daemon thread a beat to run the (trivial) target.
+    for _ in range(50):
+        if seen["phase"] is not None:
+            break
+        time.sleep(0.01)
+    assert seen["phase"] == run_state_mod.PHASE_RENDERED  # resumed at last completed phase
+    assert seen["redraft"] is False                        # the expensive draft was skipped
+    app_module.RUNS.pop("res-2", None)
+
+
+def test_discard_deletes_run_and_removes_entry(tmp_path):
+    run_dir = tmp_path / "disc-1"
+    run_dir.mkdir()
+    (run_dir / "content.json").write_text("{}")
+    app_module.RUNS["disc-1"] = {
+        "user_id": CURRENT_USER_ID, "done": True, "resumable": True, "run_dir": run_dir,
+        "step": "", "percent": 0, "error": None,
+    }
+    resp = client.post("/api/tailor/disc-1/discard")
+    assert resp.status_code == 200
+    assert not run_dir.exists()
+    assert "disc-1" not in app_module.RUNS
+
+
+def test_resumable_list_returns_only_own_resumable_runs(tmp_path):
+    app_module.RUNS["mine-r"] = {
+        "user_id": CURRENT_USER_ID, "resumable": True, "error_cause": "limit hit",
+        "metadata_file": tmp_path / "nope.json", "run_dir": tmp_path,
+    }
+    app_module.RUNS["mine-done"] = {"user_id": CURRENT_USER_ID, "resumable": False, "run_dir": tmp_path}
+    app_module.RUNS["other-r"] = {"user_id": CURRENT_USER_ID + 999, "resumable": True, "run_dir": tmp_path}
+
+    resp = client.get("/api/tailor/resumable")
+    assert resp.status_code == 200
+    ids = {r["run_id"] for r in resp.json()["runs"]}
+    assert ids == {"mine-r"}
+    for k in ("mine-r", "mine-done", "other-r"):
+        app_module.RUNS.pop(k, None)

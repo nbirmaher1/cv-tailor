@@ -35,6 +35,7 @@ from fastapi.staticfiles import StaticFiles
 import auth
 import claude_runner
 import db
+import run_state
 from routes_applications import _resolve_company_role_slugs
 from routes_applications import router as applications_router
 from routes_auth import router as auth_router
@@ -65,6 +66,11 @@ import render_pdf  # noqa: E402
 # a best-effort basis at the start of each new request -- fine for a single-user local
 # tool; a hosted multi-tenant version would want a real TTL/lifecycle policy instead.
 RUN_RETENTION_SECONDS = 2 * 60 * 60
+# Resumable (failed/interrupted, not-yet-finalized) runs are kept much longer, so a run
+# that failed on a usage limit can still be resumed hours later once the limit resets --
+# without re-running the expensive draft. Discarded explicitly via /discard, or swept once
+# this longer TTL passes.
+RESUMABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 MAX_CV_BYTES = 10 * 1024 * 1024
 MAX_JOB_TEXT_CHARS = 50_000
@@ -86,6 +92,40 @@ FUNNY_ERROR_MESSAGES = [
     "404: our confidence just went missing. Try again in a moment?",
     "The tailoring gnomes are on strike. Try again shortly?",
 ]
+
+# Friendly, actionable failure causes shown under the funny message (never raw logs) --
+# see _classify_failure. The interrupted one is set when a run is rehydrated after a
+# server restart rather than derived from a Claude output tail.
+INTERRUPTED_CAUSE = (
+    "This run was interrupted when the app restarted. Your progress is saved -- Resume to "
+    "continue where it left off."
+)
+
+
+def _classify_failure(tail_output: str, run_dir: Path, job_url: Optional[str]) -> Optional[str]:
+    """Turns the raw failure signals we already have (the draft call's stream-json tail,
+    plus which artifacts exist on disk) into one plain-English, actionable cause, or None
+    when nothing specific is recognizable (the funny message stands alone then). Never
+    returns raw logs/tracebacks -- those stay in server stderr."""
+    tail = (tail_output or "").lower()
+    content_written = (run_dir / "content.json").exists()
+
+    if any(sig in tail for sig in ("session limit", "rate_limit", '"api_error_status":429', "429")):
+        return (
+            "Claude hit its usage limit. Wait for it to reset, then Resume -- your progress "
+            "is saved and won't be re-run from scratch."
+        )
+    # A blocked/empty job-posting fetch: only meaningful when a URL was given and the draft
+    # never got far enough to write content.json.
+    if job_url and not content_written and any(
+        sig in tail for sig in ("403", "forbidden", "login", "blocked", "could not fetch", "web_fetch")
+    ):
+        return "Couldn't read the job posting from that URL. Paste the description text instead and try again."
+    if content_written:
+        # The expensive draft succeeded; whatever failed was a later, cheap phase, so Resume
+        # is genuinely cheap here.
+        return "Something went wrong finishing your document, but your tailored content is saved -- Resume to retry the last step."
+    return None
 
 # The CV itself comes from the saved master CV record now (Read is enough, no raw file to
 # parse). No Bash on any of these -- rendering and .docx extraction happen in this backend
@@ -118,9 +158,47 @@ CLAUDE_TIMEOUT_SECONDS = 720
 # many additional cut-then-re-render rounds if it's still over budget.
 MAX_QA_ROUNDS = 2
 
+EM_DASH = "—"
+
+# Deterministic backup for cv-standards.md / cover-letter-standards.md's Voice sections --
+# reproduced here verbatim so prompt wording and this code-level check can't silently drift
+# apart. Only phrases with essentially zero legitimate use in a CV/cover letter -- "robust",
+# "dynamic", and "leverage" as a noun are deliberately NOT here (see those files' Voice
+# sections): they're real technical vocabulary in some contexts, so a blind substring match
+# would risk flagging genuinely accurate claims. Judgment calls like that stay with the
+# review pass, not this scan.
+VOICE_BANNED_PHRASES = [
+    "cutting-edge", "cutting edge",
+    "seamlessly", "seamless",
+    "state-of-the-art", "state of the art",
+    "world-class", "world class",
+    "best-in-class", "best in class",
+    "holistic",
+    "synergies", "synergy",
+    "passionate about",
+    "delve",
+    "landscape",
+    "furthermore",
+    "moreover",
+    "proven track record",
+    "results-driven", "results driven",
+    "detail-oriented", "detail oriented",
+    "go-getter", "go getter",
+    "self-starter", "self starter",
+    "excellent communication skills",
+    "excellent interpersonal skills",
+    "strong work ethic",
+    "think outside the box",
+    "wear multiple hats",
+    "hard-working professional", "hard working professional",
+    "hard-working individual", "hard working individual",
+    "leveraged", "leveraging",
+]
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app: FastAPI):
     db.init_db()
+    _rehydrate_interrupted_runs()
     yield
 
 
@@ -167,12 +245,18 @@ def _save_upload_with_limit(upload: UploadFile, dest: Path, max_bytes: int, labe
 
 
 def _sweep_stale_runs() -> None:
-    cutoff = time.time() - RUN_RETENTION_SECONDS
+    now = time.time()
     for entry in RUNS_DIR.iterdir():
         if not entry.is_dir():
             continue
         try:
-            if entry.stat().st_mtime < cutoff:
+            # A resumable run (failed/interrupted, saved state present) gets the long TTL so
+            # it can still be resumed after a usage limit resets; everything else uses the
+            # short scratch TTL.
+            state = run_state.load_state(entry)
+            resumable = state is not None and state.get("phase") != run_state.PHASE_FINALIZED
+            ttl = RESUMABLE_RETENTION_SECONDS if resumable else RUN_RETENTION_SECONDS
+            if entry.stat().st_mtime < now - ttl:
                 shutil.rmtree(entry, ignore_errors=True)
                 RUNS.pop(entry.name, None)
         except FileNotFoundError:
@@ -181,6 +265,77 @@ def _sweep_stale_runs() -> None:
 
 def _delete_run_dir(run_dir: Path) -> None:
     shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def _rehydrate_run(run_dir: Path, state: dict) -> dict:
+    """Rebuilds an in-memory RUNS entry from a persisted run_state.json (see run_state.py),
+    for a run interrupted by a restart or left in a failed-but-resumable state. Presented as
+    done+resumable so the UI offers Resume; we never try to reconnect to a possibly-orphaned
+    subprocess."""
+    fmt = state.get("output_format", "pdf")
+    names = state.get("path_names", {})
+
+    def p(key):
+        name = names.get(key)
+        return (run_dir / name) if name else None
+
+    if state.get("phase") == run_state.PHASE_FAILED:
+        error = state.get("error") or random.choice(FUNNY_ERROR_MESSAGES)
+        cause = state.get("error_cause")
+    else:
+        error = "This run was interrupted before it finished."
+        cause = INTERRUPTED_CAUSE
+
+    return {
+        "step": "Interrupted", "percent": 0, "done": True,
+        "error": error, "error_cause": cause, "resumable": True,
+        "output_file": p("output_file") or (run_dir / f"output.{fmt}"),
+        "output_format": fmt,
+        "download_name": state.get("download_name", "tailored_cv"),
+        "rationale": None, "proc": None, "cancelled": False,
+        "revising": False, "revision_count": 0,
+        "cover_letter_file": p("cl_output_file"),
+        "cv_downloaded": False, "cover_letter_downloaded": False,
+        "user_id": state.get("user_id"),
+        "run_dir": run_dir,
+        "metadata_file": run_dir / "metadata.json",
+        "application": None,
+        "job_url": state.get("job_url"),
+        "job_text": state.get("job_text"),
+    }
+
+
+def _rehydrate_interrupted_runs() -> None:
+    """On server startup, re-list every not-yet-finalized run folder still in the scratch
+    dir as a resumable RUNS entry. A finalized run's folder has already been moved out of
+    RUNS_DIR into permanent storage, so it's never scanned here. This is what fixes the
+    orphan-on-restart failure: a run in flight when the server restarts is no longer lost."""
+    if not RUNS_DIR.exists():
+        return
+    for entry in RUNS_DIR.iterdir():
+        if not entry.is_dir():
+            continue
+        state = run_state.load_state(entry)
+        if state is None or state.get("phase") == run_state.PHASE_FINALIZED:
+            continue
+        run_id = state.get("run_id") or entry.name
+        try:
+            RUNS[run_id] = _rehydrate_run(entry, state)
+        except Exception:
+            # A malformed state file must never block startup.
+            print(f"[cv-tailor] could not rehydrate run {run_id}:\n{traceback.format_exc()}", file=sys.stderr)
+
+
+def _furthest_completed_phase(state: dict) -> str:
+    """The phase a resume should re-enter after: the recorded phase, or (for a failed run)
+    the phase that had completed before the failure. Never earlier than 'drafted' -- resume
+    from disk only happens when content.json exists."""
+    phase = state.get("phase")
+    if phase == run_state.PHASE_FAILED:
+        return state.get("failed_phase") or run_state.PHASE_DRAFTED
+    if phase in run_state.PHASE_ORDER and phase != run_state.PHASE_DRAFTING:
+        return phase
+    return run_state.PHASE_DRAFTED
 
 
 # -- deterministic (no-Claude) rendering + the backend-orchestrated visual-QA/cut loop --------
@@ -213,7 +368,16 @@ def _render_cover_letter_output(paths: dict) -> None:
     deterministic render right after the CV's."""
     if paths.get("cl_output_file") is None:
         return
-    content = json.loads(paths["cl_content_file"].read_text())
+    cl_content_file = paths.get("cl_content_file")
+    # A cover letter was requested, but Claude may not have produced its content record --
+    # e.g. a run interrupted partway (a session/rate limit landing after content.json was
+    # written but before cover_letter_content.json), or the skill deciding it couldn't write
+    # the letter and noting that in summary.json instead. Either way, honor the "a cover
+    # letter issue never blocks the CV" contract: skip the letter, still deliver the CV,
+    # rather than crashing the whole run on a missing file.
+    if cl_content_file is None or not cl_content_file.exists():
+        return
+    content = json.loads(cl_content_file.read_text())
     if paths["output_format"] == "pdf":
         html = fill_html.fill_cover_letter_html(content)
         paths["cl_html_file"].write_text(html)
@@ -308,6 +472,161 @@ def _try_css_fit(paths: dict, base_html: str, target_pages: int) -> Optional[tup
         if page_count == target_pages:
             return page_count, count
     return None
+
+
+def _load_json_or_empty(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _find_voice_issues(content) -> dict:
+    """Recursively scans every string value in `content` for the em dash character and any
+    VOICE_BANNED_PHRASES hit. Returns {"em_dash": bool, "phrases": [...]}; both empty/False
+    means clean. Parses the already-loaded JSON structure rather than the file's raw text,
+    so it's correct regardless of whether the em dash is stored as a literal UTF-8 character
+    or a \\uXXXX escape -- json.loads decodes either the same way."""
+    texts = []
+
+    def walk(node):
+        if isinstance(node, str):
+            texts.append(node)
+        elif isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(content)
+    blob = "\n".join(texts)
+    blob_lower = blob.lower()
+    return {
+        "em_dash": EM_DASH in blob,
+        "phrases": [p for p in VOICE_BANNED_PHRASES if p in blob_lower],
+    }
+
+
+def _strip_em_dash_in_place(content_file: Path) -> None:
+    """Last-resort deterministic guarantee: if an em dash survives every fix round, replace
+    it with ', ' throughout the parsed content and rewrite the file. Always grammatically
+    safe (unlike deleting a banned phrase, which could break a sentence's grammar entirely),
+    so this is the one finding type that gets a hard code-level guarantee rather than a
+    logged best-effort. Re-serializes via json.dumps (default ensure_ascii=True, same
+    convention _append_cut_note already uses) -- escaping non-ASCII to \\uXXXX round-trips
+    losslessly through every reader in this codebase (all use json.loads), so it's safe."""
+    data = _load_json_or_empty(content_file)
+    if not data:
+        return
+
+    def fix(node):
+        if isinstance(node, str):
+            # Collapses any surrounding whitespace along with the dash itself -- a bare
+            # replace(EM_DASH, ", ") would turn the common "X — Y" typographic pattern
+            # (spaces on both sides) into "X ,  Y" (stray space before the comma, doubled
+            # after).
+            return re.sub(r"\s*" + EM_DASH + r"\s*", ", ", node)
+        if isinstance(node, dict):
+            return {k: fix(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [fix(v) for v in node]
+        return node
+
+    content_file.write_text(json.dumps(fix(data)))
+
+
+def _run_voice_guard(run_id: str, run_dir: Path, paths: dict) -> bool:
+    """Deterministic backup for cv-standards.md / cover-letter-standards.md's Voice sections:
+    a free (no Claude call) scan of the just-drafted content record(s) for an em dash or any
+    VOICE_BANNED_PHRASES hit, with up to MAX_QA_ROUNDS short Claude fix rounds if something's
+    found. Runs before rendering -- fixing text after render would just mean re-rendering
+    anyway. Returns True once clean (whether it started that way or a fix round got it there,
+    or the round cap was hit -- see the terminal handling below); False only if a fix-round
+    Claude call itself failed at the process level (already marked done+errored by
+    run_single_call, same contract as _run_render_qa_loop) -- caller should just return."""
+    content_file = paths["content_file"]
+    cl_content_file = paths.get("cl_content_file")
+
+    def scan():
+        cv_issues = _find_voice_issues(_load_json_or_empty(content_file))
+        cl_issues = (
+            _find_voice_issues(_load_json_or_empty(cl_content_file))
+            if cl_content_file and cl_content_file.exists()
+            else {"em_dash": False, "phrases": []}
+        )
+        return (
+            cv_issues["em_dash"] or cl_issues["em_dash"],
+            sorted(set(cv_issues["phrases"] + cl_issues["phrases"])),
+        )
+
+    has_em_dash, phrases = False, []
+    for round_num in range(MAX_QA_ROUNDS + 1):
+        has_em_dash, phrases = scan()
+        if not has_em_dash and not phrases:
+            return True
+        if round_num == MAX_QA_ROUNDS:
+            break
+
+        percent = max(RUNS[run_id]["percent"], 82)
+        RUNS[run_id].update(step="Checking for AI-sounding phrasing…", percent=percent)
+
+        targets = [str(content_file)]
+        if cl_content_file and cl_content_file.exists():
+            targets.append(str(cl_content_file))
+
+        issue_lines = []
+        if has_em_dash:
+            issue_lines.append(f"- An em dash ({EM_DASH}) appears somewhere in the file(s).")
+        if phrases:
+            issue_lines.append(f"- These banned phrases appear: {', '.join(phrases)}.")
+
+        prompt = (
+            "The following text must never appear in a tailored CV or cover letter, per "
+            "cv-standards.md / cover-letter-standards.md's Voice section:\n"
+            + "\n".join(issue_lines)
+            + f"\n\nFile(s) to check: {', '.join(targets)}\n\n"
+            "Read each file, find every occurrence of the flagged issue(s) above, and rewrite "
+            "ONLY the sentence(s) containing them to remove the issue while preserving meaning "
+            "and every other rule in cv-standards.md/cover-letter-standards.md. Use a period, "
+            "comma, or parentheses in place of any em dash. Do not touch anything else in the "
+            "file(s). Overwrite the file(s) in place with the same JSON schema."
+        )
+
+        cmd = [
+            "claude", "-p", prompt,
+            "--output-format", "stream-json",
+            "--verbose",
+            "--permission-mode", "bypassPermissions",
+            "--allowedTools", QA_ALLOWED_TOOLS,
+            "--disallowedTools", DISALLOWED_TOOLS,
+            "--add-dir", str(run_dir),
+        ]
+        ok, _ = claude_runner.run_single_call(
+            run_id, cmd, PROJECT_ROOT, run_dir, lambda block: None, RUNS,
+            timeout_seconds=CLAUDE_TIMEOUT_SECONDS, fail_messages=FUNNY_ERROR_MESSAGES,
+        )
+        if not ok:
+            return False
+
+    # Round cap exhausted and still dirty. Em dash gets a safe deterministic fallback (see
+    # _strip_em_dash_in_place); a lingering banned phrase isn't safely auto-fixable, so it's
+    # logged and shipped as-is -- the same "best effort, note the residual" pattern the
+    # render/QA loop's own final round already uses for a still-over-budget CV.
+    if has_em_dash:
+        _strip_em_dash_in_place(content_file)
+        if cl_content_file and cl_content_file.exists():
+            _strip_em_dash_in_place(cl_content_file)
+        print(
+            f"[cv-tailor] job {run_id}: em dash survived {MAX_QA_ROUNDS} fix rounds, stripped deterministically",
+            file=sys.stderr,
+        )
+    if phrases:
+        print(
+            f"[cv-tailor] job {run_id}: banned phrase(s) survived {MAX_QA_ROUNDS} fix rounds, shipping as-is: {phrases}",
+            file=sys.stderr,
+        )
+    return True
 
 
 def _run_render_qa_loop(run_id: str, run_dir: Path, paths: dict) -> bool:
@@ -750,6 +1069,8 @@ explanation to {run_dir / 'error.txt'} instead, and stop."""
         "percent": 3,
         "done": False,
         "error": None,
+        "error_cause": None,
+        "resumable": False,
         "output_file": output_file,
         "output_format": output_format,
         "download_name": download_name,
@@ -785,12 +1106,50 @@ explanation to {run_dir / 'error.txt'} instead, and stop."""
     run_allowed_tools = (
         TAILOR_FROM_MASTER_ALLOWED_TOOLS_WITH_WEB_SEARCH if wants_company_research else TAILOR_FROM_MASTER_ALLOWED_TOOLS
     )
+
+    # Persist everything needed to rehydrate this run after a server restart and resume it
+    # from its last completed phase without re-deriving anything (see run_state.py). The
+    # built draft prompt is stored verbatim so a resume that must re-run the draft doesn't
+    # have to rebuild it; it references absolute run-dir paths that stay valid.
+    _persist_run_state(
+        run_dir, run_id, user["id"], paths, prompt, run_allowed_tools,
+        job_url or None, job_text or None, wants_cover_letter, download_name,
+    )
+
     thread = threading.Thread(
         target=_run_claude, args=(run_id, prompt, run_dir, paths, run_allowed_tools), daemon=True
     )
     thread.start()
 
     return {"run_id": run_id}
+
+
+def _persist_run_state(run_dir, run_id, user_id, paths, prompt, allowed_tools,
+                       job_url, job_text, wants_cover_letter, download_name):
+    """Snapshots a run's identity + inputs + phase to runs/<id>/run_state.json. `paths`
+    Path values are stored as bare filenames (rebuilt on load via
+    run_state.paths_from_state) since the run folder itself is what moves/persists."""
+    path_names = {
+        key: (value.name if isinstance(value, Path) else None)
+        for key, value in paths.items()
+        if key != "output_format"
+    }
+    run_state.write_state(run_dir, {
+        "run_id": run_id,
+        "user_id": user_id,
+        "output_format": paths["output_format"],
+        "download_name": download_name,
+        "job_url": job_url,
+        "job_text": job_text,
+        "wants_cover_letter": wants_cover_letter,
+        "path_names": path_names,
+        "draft_prompt": prompt,
+        "allowed_tools": allowed_tools,
+        "phase": run_state.PHASE_DRAFTING,
+        "failed_phase": None,
+        "error": None,
+        "error_cause": None,
+    })
 
 
 def _media_type(output_format: str) -> str:
@@ -806,6 +1165,10 @@ def tailor_status(run_id: str, user=Depends(auth.get_current_user)):
         "percent": run["percent"],
         "done": run["done"],
         "error": run["error"],
+        "error_cause": run.get("error_cause"),
+        "resumable": run.get("resumable", False),
+        "output_format": run.get("output_format"),
+        "download_name": run.get("download_name"),
         "rationale": run.get("rationale"),
         "revision_count": run.get("revision_count", 0),
         "max_revisions": MAX_REVISIONS,
@@ -996,6 +1359,83 @@ def cancel_tailor(run_id: str, user=Depends(auth.get_current_user)):
     return {"cancelled": True}
 
 
+@app.post("/api/tailor/{run_id}/resume")
+def resume_tailor(run_id: str, user=Depends(auth.get_current_user)):
+    """Resumes a failed/interrupted run from its last completed phase. If the draft already
+    produced content.json (the common, token-saving case), the expensive draft+review call
+    is skipped and only the remaining cheap phases re-run; otherwise the stored draft prompt
+    is re-run first."""
+    run = _own_run_or_404(run_id, user["id"])
+    if not run.get("resumable"):
+        raise HTTPException(409, "This run can't be resumed.")
+    if not run["done"]:
+        raise HTTPException(409, "This run is still in progress.")
+
+    run_dir = run.get("run_dir") or (RUNS_DIR / run_id)
+    state = run_state.load_state(run_dir)
+    if state is None:
+        raise HTTPException(409, "This run's saved state is missing, so it can't be resumed. Start a new run.")
+
+    paths = run_state.paths_from_state(run_dir, state)
+    run.update(
+        done=False, error=None, error_cause=None, resumable=False, cancelled=False,
+        step="Resuming…", percent=8,
+    )
+
+    if paths["content_file"].exists():
+        start_phase = _furthest_completed_phase(state)
+        run_state.update_phase(run_dir, start_phase)
+        thread = threading.Thread(
+            target=_run_post_draft_phases, args=(run_id, run_dir, paths, start_phase, True), daemon=True
+        )
+    else:
+        # No content.json -- the draft never completed (e.g. a usage limit mid-draft), so it
+        # must be re-run. The stored prompt references still-valid absolute run-dir paths.
+        run_state.update_phase(run_dir, run_state.PHASE_DRAFTING)
+        thread = threading.Thread(
+            target=_run_claude, args=(run_id, state["draft_prompt"], run_dir, paths, state.get("allowed_tools", TAILOR_FROM_MASTER_ALLOWED_TOOLS)), daemon=True
+        )
+    thread.start()
+    return {"run_id": run_id}
+
+
+@app.post("/api/tailor/{run_id}/discard")
+def discard_tailor(run_id: str, user=Depends(auth.get_current_user)):
+    """Deletes a failed/interrupted run the user doesn't want to resume, so kept-for-resume
+    folders don't accumulate."""
+    run = _own_run_or_404(run_id, user["id"])
+    _delete_run_dir(run.get("run_dir") or (RUNS_DIR / run_id))
+    RUNS.pop(run_id, None)
+    return {"discarded": True}
+
+
+@app.get("/api/tailor/resumable")
+def list_resumable(user=Depends(auth.get_current_user)):
+    """Failed/interrupted runs the current user can resume -- lets the tailor screen surface
+    a run orphaned by a restart (or failed on a usage limit) after a page reload, since the
+    frontend otherwise loses the run_id."""
+    out = []
+    for run_id, run in RUNS.items():
+        if run.get("user_id") != user["id"] or not run.get("resumable"):
+            continue
+        company = role = None
+        metadata_file = run.get("metadata_file")
+        if metadata_file and metadata_file.exists():
+            try:
+                meta = json.loads(metadata_file.read_text())
+                company = (meta.get("company_name") or "").strip() or None
+                role = (meta.get("role_name") or "").strip() or None
+            except (json.JSONDecodeError, OSError):
+                pass
+        out.append({
+            "run_id": run_id,
+            "company_name": company,
+            "role_name": role,
+            "error_cause": run.get("error_cause"),
+        })
+    return {"runs": out}
+
+
 # Ordered so later matches only apply once earlier ones have already been seen once each,
 # via the seen-counts state carried across the run in _run_claude.
 def _classify_event(tool_name: str, counts: dict) -> Optional[tuple[str, int]]:
@@ -1022,7 +1462,7 @@ def _classify_revision_event(tool_name: str, counts: dict) -> Optional[tuple[str
     return None
 
 
-def _fail_run(run_id: str, context: str) -> None:
+def _fail_run(run_id: str, context: str, resumable: bool = True) -> None:
     """Marks a run done+errored after an unexpected exception in this backend's own
     post-draft orchestration (rendering, the QA loop, finalizing) -- none of that runs
     inside claude_runner's subprocess-streaming try/except, so without this a bug here
@@ -1033,7 +1473,16 @@ def _fail_run(run_id: str, context: str) -> None:
     if job is None or job.get("cancelled"):
         return
     print(f"[cv-tailor] job {run_id} crashed {context}:\n{traceback.format_exc()}", file=sys.stderr)
-    job.update(done=True, error=random.choice(FUNNY_ERROR_MESSAGES))
+    run_dir = job.get("run_dir") or (RUNS_DIR / run_id)
+    funny = random.choice(FUNNY_ERROR_MESSAGES)
+    if resumable:
+        cause = _classify_failure("", run_dir, job.get("job_url"))
+        job.update(done=True, error=funny, error_cause=cause, resumable=True)
+        # Record the failure for resume; content.json exists here (a backend crash is always
+        # post-draft), so the recorded phase is at least drafted.
+        run_state.update_phase(run_dir, run_state.PHASE_FAILED, error=funny, error_cause=cause)
+    else:
+        job.update(done=True, error=funny)
 
 
 def _run_claude(run_id: str, draft_prompt: str, run_dir: Path, paths: dict, allowed_tools: str = TAILOR_FROM_MASTER_ALLOWED_TOOLS):
@@ -1082,27 +1531,86 @@ def _run_claude(run_id: str, draft_prompt: str, run_dir: Path, paths: dict, allo
     if not paths["content_file"].exists():
         error_file = run_dir / "error.txt"
         if error_file.exists():
-            RUNS[run_id].update(done=True, error=error_file.read_text())
+            # A deliberate, actionable message the skill wrote itself -- show it as-is, and
+            # it's not resumable in the cheap sense (no draft to skip), but keep the run so a
+            # fresh attempt can reuse the folder.
+            RUNS[run_id].update(done=True, error=error_file.read_text(), resumable=True)
+            run_state.update_phase(run_dir, run_state.PHASE_FAILED, failed_phase=run_state.PHASE_DRAFTING,
+                                   error=error_file.read_text())
         else:
             print(f"[cv-tailor] job {run_id} failed without an output file:\n{tail_output}", file=sys.stderr)
-            RUNS[run_id].update(done=True, error=random.choice(FUNNY_ERROR_MESSAGES))
+            cause = _classify_failure(tail_output, run_dir, RUNS[run_id].get("job_url"))
+            funny = random.choice(FUNNY_ERROR_MESSAGES)
+            RUNS[run_id].update(done=True, error=funny, error_cause=cause, resumable=True)
+            run_state.update_phase(run_dir, run_state.PHASE_FAILED, failed_phase=run_state.PHASE_DRAFTING,
+                                   error=funny, error_cause=cause)
         return
 
-    # Everything from here on is this backend's own logic (rendering, the QA loop,
-    # finalizing) -- none of it runs inside claude_runner's subprocess try/except, so it
-    # needs its own safety net (see _fail_run).
+    run_state.update_phase(run_dir, run_state.PHASE_DRAFTED)
+    _run_post_draft_phases(run_id, run_dir, paths, start_phase=run_state.PHASE_DRAFTED, finalize=True)
+
+
+def _run_post_draft_phases(run_id: str, run_dir: Path, paths: dict, start_phase: str, finalize: bool):
+    """Runs the cheap phases after a successful draft -- voice guard, render/QA, and
+    (for a fresh run) finalize -- updating run_state after each so a later failure or a
+    restart can resume from the furthest completed phase. `start_phase` lets a resume skip
+    phases already done on disk. None of this runs inside claude_runner's subprocess
+    try/except, so it carries its own safety net (see _fail_run)."""
+    order = run_state.PHASE_ORDER
+    start_idx = order.index(start_phase)
+    # A revision (finalize=False) runs against the already-finalized permanent-storage folder,
+    # so its failures must NOT be marked resumable -- resuming would try to re-finalize/re-move
+    # that folder. Only fresh runs are resumable (revisions are cheap and out of scope here).
+    resumable = finalize
     try:
-        if not _run_render_qa_loop(run_id, run_dir, paths):
+        if start_idx < order.index(run_state.PHASE_VOICE_CHECKED):
+            if not _run_voice_guard(run_id, run_dir, paths):
+                if resumable:
+                    _mark_resumable_failure(run_id, run_dir, run_state.PHASE_DRAFTED)
+                return
+            run_state.update_phase(run_dir, run_state.PHASE_VOICE_CHECKED)
+
+        if start_idx < order.index(run_state.PHASE_RENDERED):
+            if not _run_render_qa_loop(run_id, run_dir, paths):
+                if resumable:
+                    _mark_resumable_failure(run_id, run_dir, run_state.PHASE_VOICE_CHECKED)
+                return
+            run_state.update_phase(run_dir, run_state.PHASE_RENDERED)
+
+        if not finalize:
+            # Revision path: the output stays in place, no move-to-permanent-storage.
+            RUNS[run_id]["rationale"] = _read_rationale(run_dir)
+            RUNS[run_id].update(step="Done!", percent=100, done=True, error=None)
             return
 
         _finalize_application_run(run_id)
         if RUNS[run_id].get("error"):
-            RUNS[run_id]["done"] = True
-        else:
-            RUNS[run_id]["rationale"] = _read_rationale(RUNS[run_id]["run_dir"])
-            RUNS[run_id].update(step="Done!", percent=100, done=True, error=None)
+            # The move to permanent storage failed -- keep the run resumable so finalize can
+            # be retried (the rendered output is still on disk).
+            RUNS[run_id].update(done=True, resumable=True,
+                                error_cause="Your CV was generated but couldn't be filed. Resume to retry.")
+            run_state.update_phase(run_dir, run_state.PHASE_FAILED, failed_phase=run_state.PHASE_RENDERED)
+            return
+        # run_dir was moved by finalize -- record the terminal phase at its new location.
+        run_state.update_phase(RUNS[run_id]["run_dir"], run_state.PHASE_FINALIZED)
+        RUNS[run_id]["rationale"] = _read_rationale(RUNS[run_id]["run_dir"])
+        RUNS[run_id].update(step="Done!", percent=100, done=True, error=None)
     except Exception:
-        _fail_run(run_id, "during rendering/QA/finalize")
+        _fail_run(run_id, "during rendering/QA/finalize", resumable=resumable)
+
+
+def _mark_resumable_failure(run_id: str, run_dir: Path, completed_phase: str) -> None:
+    """Adds the resumable/cause markers to a run that a post-draft phase already marked
+    done+errored (via run_single_call's funny message), without overwriting that message.
+    Post-draft failures always have content.json on disk, so they're cheaply resumable."""
+    run = RUNS.get(run_id)
+    if run is None or run.get("cancelled"):
+        return
+    cause = run.get("error_cause") or _classify_failure("", run_dir, run.get("job_url"))
+    run["error_cause"] = cause
+    run["resumable"] = True
+    run_state.update_phase(run_dir, run_state.PHASE_FAILED, failed_phase=completed_phase,
+                           error=run.get("error"), error_cause=cause)
 
 
 def _run_revision(run_id: str, edit_prompt: str, run_dir: Path, paths: dict):
@@ -1175,16 +1683,11 @@ def _run_revision_inner(run_id: str, edit_prompt: str, run_dir: Path, paths: dic
             RUNS[run_id].update(done=True, error=random.choice(FUNNY_ERROR_MESSAGES))
         return
 
-    # Same reasoning as _run_claude: this backend's own rendering/QA-loop logic has no
-    # safety net of its own, so it needs one here.
-    try:
-        if not _run_render_qa_loop(run_id, run_dir, paths):
-            return
-
-        RUNS[run_id]["rationale"] = _read_rationale(run_dir)
-        RUNS[run_id].update(step="Done!", percent=100, done=True, error=None)
-    except Exception:
-        _fail_run(run_id, "during rendering/QA/finalize")
+    # Reuse the same post-draft phase runner fresh tailoring uses (voice guard -> render/QA),
+    # but without finalize -- a revision edits an already-filed record in place. The content
+    # record was just rewritten, so this is effectively a fresh "drafted" state to run forward
+    # from; failures here are handled with the same resumable markers.
+    _run_post_draft_phases(run_id, run_dir, paths, start_phase=run_state.PHASE_DRAFTED, finalize=False)
 
 
 if __name__ == "__main__":

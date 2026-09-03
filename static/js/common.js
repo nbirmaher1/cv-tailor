@@ -39,6 +39,7 @@ function showScreen(name) {
   document.querySelectorAll('[data-screen]').forEach((el) => {
     el.classList.toggle('hidden', el.dataset.screen !== name);
   });
+  document.dispatchEvent(new CustomEvent('screen:shown', { detail: { name } }));
 }
 
 // Whether the current user has a saved master CV -- set once at login and
@@ -77,8 +78,16 @@ function pollJob(statusUrl, { onProgress, cancelToken } = {}) {
         if (onProgress) onProgress(s);
         if (s.done) {
           clearInterval(interval);
-          if (s.error) reject(new Error(s.error));
-          else resolve(s);
+          if (s.error) {
+            // Carry the friendly cause + resumability so the caller can offer Resume
+            // instead of just showing the (funny) top-line message.
+            const err = new Error(s.error);
+            err.errorCause = s.error_cause || null;
+            err.resumable = !!s.resumable;
+            reject(err);
+          } else {
+            resolve(s);
+          }
         }
       } catch (err) {
         consecutiveFailures += 1;

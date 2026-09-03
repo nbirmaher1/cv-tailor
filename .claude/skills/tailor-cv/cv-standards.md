@@ -87,6 +87,27 @@ first). Everything here depends on it.
   Skills — only where the CV genuinely backs it up. Adopting JD terminology the CV doesn't support
   is keyword-stuffing, not tailoring.
 
+## Voice: must read as written by the candidate, not generated
+Hard requirement, not a style preference — a recruiter should never suspect this was AI-written.
+This does NOT relax the bullet format above: bullets stay terse, parallel, verb-led — that's
+correct ATS convention, not an AI tell. These rules matter most in the one part of a CV that's
+continuous prose: the **summary**.
+
+- **Never use an em dash (—) anywhere in the document.** Use a period, comma, or parentheses
+  instead. No exceptions, not even one.
+- **Never use any of these — always filler, no legitimate use in a CV**: "cutting-edge,"
+  "seamless(ly)," "state-of-the-art," "world-class," "best-in-class," "holistic,"
+  "synergy"/"synergies," "passionate about," "delve," "landscape" (as in "the ... landscape"),
+  "furthermore," "moreover," "proven track record," "results-driven," "detail-oriented,"
+  "go-getter," "self-starter," "excellent communication skills," "excellent interpersonal skills,"
+  "strong work ethic," "think outside the box," "wear multiple hats," "hard-working
+  professional"/"hard-working individual," and "leverage" used as a verb ("leveraged X to...").
+  Same grandiose-verb ban as above applies here too.
+- **"Robust," "dynamic," and "leverage" as a noun are situational, not banned outright**: fine only
+  when stating an actual, source-backed technical property ("a robust ETL pipeline," "dynamic
+  resource allocation" — real technical terms this candidate can back up). Never as vague
+  self-description ("a dynamic professional," "a robust skill set").
+
 ## Formatting (already enforced by the templates — don't fight them)
 - Single-column layout only. Multi-column layouts cause ATS parsers to scramble text order.
 - No tables, text boxes, icons, or graphics. The one narrow exception is an optional headshot

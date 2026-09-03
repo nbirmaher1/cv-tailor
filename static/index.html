@@ -382,6 +382,12 @@
         </div>
       </div>
 
+      <!-- RESUMABLE RUNS BANNER (interrupted / failed runs the user can pick back up) -->
+      <div id="resumable-banner" class="hidden mb-6 rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/30 p-4">
+        <p class="text-xs font-semibold text-amber-700 dark:text-amber-400 tracking-wide uppercase mb-2">Unfinished runs</p>
+        <div id="resumable-list" class="space-y-2"></div>
+      </div>
+
       <!-- FORM STATE -->
       <form id="form" class="space-y-8">
 
@@ -518,6 +524,24 @@
         </div>
         <p class="text-xs text-zinc-400 mt-6 max-w-xs">This runs through your local Claude Code session — no data leaves your machine except the parsing/fetch/tailoring steps Claude performs.</p>
         <button type="button" id="cancel-btn" class="mt-5 text-xs text-zinc-400 hover:text-red-500 transition-colors">Cancel</button>
+      </div>
+
+      <!-- FAILURE STATE (resumable) -->
+      <div id="failure-state" class="hidden fade-up flex flex-col items-center text-center py-10">
+        <div class="w-14 h-14 rounded-full bg-red-50 dark:bg-red-950/40 flex items-center justify-center mb-5">
+          <svg class="w-7 h-7 text-red-500" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+          </svg>
+        </div>
+        <p id="failure-message" class="text-base font-semibold text-zinc-900 dark:text-white">Something went wrong</p>
+        <p id="failure-cause" class="hidden text-sm text-zinc-500 dark:text-zinc-400 mt-2 max-w-md"></p>
+        <div class="flex items-center gap-3 mt-6">
+          <button type="button" id="failure-resume-btn" class="inline-flex items-center gap-2 rounded-xl bg-accent hover:bg-accent-hover text-white font-semibold text-sm px-6 py-3 transition-all duration-200 shadow-sm hover:shadow-md">
+            Resume
+          </button>
+          <button type="button" id="failure-startover-btn" class="text-sm text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors">Start over</button>
+        </div>
+        <button type="button" id="failure-discard-btn" class="mt-4 text-xs text-zinc-400 hover:text-red-500 transition-colors">Discard this run</button>
       </div>
 
       <!-- SUCCESS STATE -->
