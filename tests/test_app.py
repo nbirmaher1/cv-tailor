@@ -301,6 +301,44 @@ def test_read_rationale_malformed_json_returns_none(tmp_path):
     assert _read_rationale(tmp_path) is None
 
 
+def test_read_rationale_parses_valid_requirements(tmp_path):
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "summary": "s", "changes": [], "review_note": "",
+        "requirements": [
+            {"name": "SQL", "status": "matched", "evidence": "Built a dashboard in SQL."},
+            {"name": "Tableau", "status": "listed_only"},
+            {"name": "Kubernetes", "status": "missing"},
+        ],
+    }))
+    result = _read_rationale(tmp_path)
+    assert result["requirements"] == [
+        {"name": "SQL", "status": "matched", "evidence": "Built a dashboard in SQL."},
+        {"name": "Tableau", "status": "listed_only", "evidence": ""},
+        {"name": "Kubernetes", "status": "missing", "evidence": ""},
+    ]
+
+
+def test_read_rationale_filters_malformed_requirements(tmp_path):
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "summary": "s", "changes": [], "review_note": "",
+        "requirements": [
+            {"name": "SQL", "status": "matched", "evidence": "ok"},
+            {"name": "", "status": "matched"},           # missing name
+            {"name": "Bad", "status": "not-a-real-status"},  # invalid status
+            "just a string",                              # not even a dict
+            {"status": "missing"},                        # missing name key entirely
+        ],
+    }))
+    result = _read_rationale(tmp_path)
+    assert result["requirements"] == [{"name": "SQL", "status": "matched", "evidence": "ok"}]
+
+
+def test_read_rationale_missing_requirements_key_defaults_to_empty_list(tmp_path):
+    (tmp_path / "summary.json").write_text(json.dumps({"summary": "s", "changes": [], "review_note": ""}))
+    result = _read_rationale(tmp_path)
+    assert result["requirements"] == []
+
+
 # -- _sweep_stale_runs --------------------------------------------------------
 
 def test_sweep_stale_runs_removes_old_dirs_keeps_fresh(tmp_path, monkeypatch):
@@ -586,3 +624,232 @@ def test_revise_clears_stale_error_file(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert not (run_dir / "error.txt").exists()
     app_module.RUNS.pop("run-r", None)
+
+
+# -- _run_render_qa_loop ---------------------------------------------------------------
+#
+# The backend-orchestrated render + visual-QA/cut loop that replaced Claude's own
+# Bash-driven rendering (see A4). Renders are mocked out (no real Playwright/docx work);
+# what's under test is the loop's control flow: does it stop on "pass", does it respect
+# the round cap, does it re-render between rounds, does a QA-call failure propagate.
+
+def _make_qa_paths(run_dir, output_format="pdf", target_pages=1):
+    content_file = run_dir / "content.json"
+    content_file.write_text(json.dumps({"summary": "x", "experience": [], "skills": [], "extra_sections": []}))
+    html_file = run_dir / "output.html" if output_format == "pdf" else None
+    if html_file is not None:
+        html_file.write_text("<html></html>")
+    output_file = run_dir / f"output.{output_format}"
+    summary_file = run_dir / "summary.json"
+    summary_file.write_text(json.dumps({"summary": "s", "changes": [], "review_note": "", "target_pages": target_pages}))
+    return {
+        "output_file": output_file, "output_format": output_format, "content_file": content_file,
+        "html_file": html_file, "summary_file": summary_file,
+        "cl_content_file": None, "cl_html_file": None, "cl_output_file": None,
+    }
+
+
+def _mock_renders(monkeypatch, page_count=1):
+    monkeypatch.setattr(app_module.render_pdf, "render", lambda html, pdf: page_count)
+    monkeypatch.setattr(app_module.render_docx, "build", lambda content, path: None)
+
+
+def test_qa_loop_passes_on_first_round_without_re_render(tmp_path, monkeypatch):
+    app_module.RUNS["qa-1"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path)
+    _mock_renders(monkeypatch)
+
+    calls = {"n": 0}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        calls["n"] += 1
+        (tmp_path / "qa_result.json").write_text(json.dumps({"status": "pass"}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_render_qa_loop("qa-1", tmp_path, paths)
+
+    assert result is True
+    assert calls["n"] == 1
+    app_module.RUNS.pop("qa-1", None)
+
+
+def test_qa_loop_cuts_once_then_passes(tmp_path, monkeypatch):
+    app_module.RUNS["qa-2"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path)
+    _mock_renders(monkeypatch)
+
+    calls = {"n": 0}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        calls["n"] += 1
+        status = "revise" if calls["n"] == 1 else "pass"
+        (tmp_path / "qa_result.json").write_text(json.dumps({"status": status}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_render_qa_loop("qa-2", tmp_path, paths)
+
+    assert result is True
+    assert calls["n"] == 2
+    summary = json.loads(paths["summary_file"].read_text())
+    assert "Further condensed to fit the page budget." in summary["changes"]
+    app_module.RUNS.pop("qa-2", None)
+
+
+def test_qa_loop_stops_at_round_cap_even_if_still_over_budget(tmp_path, monkeypatch):
+    app_module.RUNS["qa-3"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path)
+    _mock_renders(monkeypatch)
+
+    calls = {"n": 0}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        calls["n"] += 1
+        (tmp_path / "qa_result.json").write_text(json.dumps({"status": "revise"}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_render_qa_loop("qa-3", tmp_path, paths)
+
+    assert result is True  # the final round always ends the loop, whatever Claude wrote
+    assert calls["n"] == app_module.MAX_QA_ROUNDS + 1  # initial check + capped extra rounds
+    app_module.RUNS.pop("qa-3", None)
+
+
+def test_qa_loop_returns_false_when_qa_call_fails(tmp_path, monkeypatch):
+    app_module.RUNS["qa-4"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path)
+    _mock_renders(monkeypatch)
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        # run_single_call already marks the job done+errored itself on a real failure.
+        jobs[job_id].update(done=True, error="Something went wrong on our end. Please try again.")
+        return False, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_render_qa_loop("qa-4", tmp_path, paths)
+
+    assert result is False
+    assert app_module.RUNS["qa-4"]["done"] is True
+    app_module.RUNS.pop("qa-4", None)
+
+
+def test_qa_loop_docx_uses_stats_not_page_count(tmp_path, monkeypatch):
+    app_module.RUNS["qa-5"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path, output_format="docx")
+    _mock_renders(monkeypatch)
+    monkeypatch.setattr(app_module.docx_stats, "compute_stats", lambda path: {"total_bullets": 42})
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        # The DOCX branch of _qa_prompt should surface the docx_stats numbers, not a
+        # page count (there is no rendered PDF to point Claude at for a DOCX run).
+        assert "total_bullets" in cmd[2]
+        assert "page(s) at Read the rendered PDF" not in cmd[2]
+        (tmp_path / "qa_result.json").write_text(json.dumps({"status": "pass"}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_render_qa_loop("qa-5", tmp_path, paths)
+
+    assert result is True
+    app_module.RUNS.pop("qa-5", None)
+
+
+# -- CSS micro-fit for near-miss PDF overflow (tiered skip) ----------------------------
+
+def _mock_render_sequence(monkeypatch, page_counts):
+    """page_counts is consumed in call order; a call beyond the list raises StopIteration
+    -- an implicit "this called render more times than expected" assertion."""
+    counts = iter(page_counts)
+    monkeypatch.setattr(app_module.render_pdf, "render", lambda html, pdf: next(counts))
+    monkeypatch.setattr(app_module.render_docx, "build", lambda content, path: None)
+
+
+def test_css_fit_within_first_two_tweaks_skips_qa_call_entirely(tmp_path, monkeypatch):
+    app_module.RUNS["qa-6"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path, target_pages=1)
+    # initial render: 2 pages (one over budget) -> tweak 1: still 2 -> tweak 2: fits at 1.
+    _mock_render_sequence(monkeypatch, [2, 2, 1])
+
+    def fail_if_called(*a, **kw):
+        raise AssertionError("Claude QA call should have been skipped for a mild CSS fit")
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fail_if_called)
+
+    result = app_module._run_render_qa_loop("qa-6", tmp_path, paths)
+
+    assert result is True
+    app_module.RUNS.pop("qa-6", None)
+
+
+def test_css_fit_needing_harder_tweak_still_runs_qa_call(tmp_path, monkeypatch):
+    app_module.RUNS["qa-7"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path, target_pages=1)
+    # initial: 2 -> tweak 1: 2 -> tweak 2: 2 -> tweak 3: fits at 1.
+    _mock_render_sequence(monkeypatch, [2, 2, 2, 1])
+
+    calls = {"n": 0}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        calls["n"] += 1
+        (tmp_path / "qa_result.json").write_text(json.dumps({"status": "pass"}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_render_qa_loop("qa-7", tmp_path, paths)
+
+    assert result is True
+    assert calls["n"] == 1
+    app_module.RUNS.pop("qa-7", None)
+
+
+def test_css_fit_no_tweak_works_falls_through_to_normal_qa(tmp_path, monkeypatch):
+    app_module.RUNS["qa-8"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path, target_pages=1)
+    # initial: 2 -> all 5 tweaks still 2 -> revert re-render: still 2.
+    _mock_render_sequence(monkeypatch, [2, 2, 2, 2, 2, 2, 2])
+
+    calls = {"n": 0}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        calls["n"] += 1
+        (tmp_path / "qa_result.json").write_text(json.dumps({"status": "pass"}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_render_qa_loop("qa-8", tmp_path, paths)
+
+    assert result is True
+    assert calls["n"] == 1
+    app_module.RUNS.pop("qa-8", None)
+
+
+def test_css_fit_not_attempted_when_more_than_one_page_over(tmp_path, monkeypatch):
+    app_module.RUNS["qa-9"] = {"percent": 0, "step": "", "done": False, "error": None, "cancelled": False}
+    paths = _make_qa_paths(tmp_path, target_pages=1)
+    # 2 pages over budget -- CSS fit is only attempted for exactly one page over, so only
+    # the single initial render call should happen (a second call would raise StopIteration).
+    _mock_render_sequence(monkeypatch, [3])
+
+    calls = {"n": 0}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        calls["n"] += 1
+        (tmp_path / "qa_result.json").write_text(json.dumps({"status": "pass"}))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+
+    result = app_module._run_render_qa_loop("qa-9", tmp_path, paths)
+
+    assert result is True
+    assert calls["n"] == 1
+    app_module.RUNS.pop("qa-9", None)

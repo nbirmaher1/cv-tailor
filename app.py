@@ -16,11 +16,13 @@ the frontend can poll for a live progress bar instead of staring at a static
 """
 import contextlib
 import json
+import random
 import re
 import shutil
 import sys
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,6 +45,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 RUNS_DIR = PROJECT_ROOT / "runs"
 RUNS_DIR.mkdir(exist_ok=True)
 DATA_DIR = PROJECT_ROOT / "data"
+
+# The render/extract scripts are plain importable Python (not just CLI entry points) --
+# imported directly rather than shelled out to via Bash, since Claude's own --allowedTools
+# scoping of Bash turns out not to be reliably enforced by the CLI (verified empirically:
+# a command outside an allowed Bash(...) pattern still executed). Untrusted job-posting
+# text flows into the tailoring prompt via WebFetch, so Bash is dropped from Claude's tool
+# access entirely for every web-app call site; these scripts run directly in this process
+# instead, deterministically, with arguments this backend controls.
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+import docx_stats  # noqa: E402
+import extract_docx  # noqa: E402
+import fill_html  # noqa: E402
+import render_cover_letter_docx  # noqa: E402
+import render_docx  # noqa: E402
+import render_pdf  # noqa: E402
 
 # Abandoned/errored run folders (uploaded CV, photo, any partial output) are swept on
 # a best-effort basis at the start of each new request -- fine for a single-user local
@@ -70,42 +87,36 @@ FUNNY_ERROR_MESSAGES = [
     "The tailoring gnomes are on strike. Try again shortly?",
 ]
 
-VENV_PY = PROJECT_ROOT / "venv" / "bin" / "python3"
-EXTRACT_SCRIPT = PROJECT_ROOT / "scripts" / "extract_docx.py"
-RENDER_PDF_SCRIPT = PROJECT_ROOT / "scripts" / "render_pdf.py"
-RENDER_DOCX_SCRIPT = PROJECT_ROOT / "scripts" / "render_docx.py"
-RENDER_COVER_LETTER_DOCX_SCRIPT = PROJECT_ROOT / "scripts" / "render_cover_letter_docx.py"
-DOCX_STATS_SCRIPT = PROJECT_ROOT / "scripts" / "docx_stats.py"
-
-# The CV itself comes from the saved master CV record now (Read is enough, no raw
-# file to parse) -- extract_docx.py stays in the allow-list regardless, since an
-# *optional* uploaded cover-letter-template can still be a .docx that needs it.
-TAILOR_FROM_MASTER_ALLOWED_TOOLS = (
-    "Read Write WebFetch Agent "
-    f'Bash({VENV_PY} {EXTRACT_SCRIPT} *) '
-    f'Bash({VENV_PY} {RENDER_PDF_SCRIPT} *) '
-    f'Bash({VENV_PY} {RENDER_DOCX_SCRIPT} *) '
-    f'Bash({VENV_PY} {RENDER_COVER_LETTER_DOCX_SCRIPT} *) '
-    f'Bash({VENV_PY} {DOCX_STATS_SCRIPT} *)'
-)
+# The CV itself comes from the saved master CV record now (Read is enough, no raw file to
+# parse). No Bash on any of these -- rendering and .docx extraction happen in this backend
+# process instead (see the script imports above), not via a Claude tool call.
+TAILOR_FROM_MASTER_ALLOWED_TOOLS = "Read Write WebFetch Agent"
 
 # Only granted for a run that opted into "intelligent" cover letter research -- WebSearch
 # isn't needed for ordinary tailoring (WebFetch already covers the one known job-posting
 # URL), so it stays out of the default tool set.
 TAILOR_FROM_MASTER_ALLOWED_TOOLS_WITH_WEB_SEARCH = TAILOR_FROM_MASTER_ALLOWED_TOOLS + " WebSearch"
 
-# Revisions only edit an already-tailored record and re-render it -- no WebFetch (must not
-# re-fetch/re-derive from the job posting) and no Agent (no full independent-review redo),
-# which also structurally enforces "targeted edit, not a fresh tailoring pass."
-REVISE_ALLOWED_TOOLS = (
-    "Read Write "
-    f'Bash({VENV_PY} {RENDER_PDF_SCRIPT} *) '
-    f'Bash({VENV_PY} {RENDER_DOCX_SCRIPT} *) '
-    f'Bash({VENV_PY} {RENDER_COVER_LETTER_DOCX_SCRIPT} *) '
-    f'Bash({VENV_PY} {DOCX_STATS_SCRIPT} *)'
-)
+# Revisions only edit an already-tailored record -- no WebFetch (must not re-fetch/re-derive
+# from the job posting) and no Agent (no full independent-review redo), which also
+# structurally enforces "targeted edit, not a fresh tailoring pass."
+REVISE_ALLOWED_TOOLS = "Read Write"
+
+# The post-render visual-QA/cut-loop calls (see _run_render_qa_loop) never need anything
+# beyond reading the rendered result and, if it needs a cut, rewriting the content record.
+QA_ALLOWED_TOOLS = "Read Write"
+
+# Belt-and-suspenders on every call site below, even though Bash is already absent from
+# every allow-list above: --allowedTools scoping of Bash was verified empirically to not
+# be reliably enforced by the CLI, but --disallowedTools is (confirmed: Bash becomes fully
+# undiscoverable, not just unlisted). Never remove this without re-verifying that finding.
+DISALLOWED_TOOLS = "Bash"
 
 CLAUDE_TIMEOUT_SECONDS = 720
+
+# SKILL.md step 8's cut-and-recheck cap: the initial post-render QA check, plus up to this
+# many additional cut-then-re-render rounds if it's still over budget.
+MAX_QA_ROUNDS = 2
 
 @contextlib.asynccontextmanager
 async def _lifespan(_app: FastAPI):
@@ -172,6 +183,226 @@ def _delete_run_dir(run_dir: Path) -> None:
     shutil.rmtree(run_dir, ignore_errors=True)
 
 
+# -- deterministic (no-Claude) rendering + the backend-orchestrated visual-QA/cut loop --------
+#
+# Claude never renders anything itself (no Bash access, see the constants above) -- it only
+# ever writes/edits the content JSON (+ HTML for PDF), and this backend renders it. The loop
+# below stands in for what used to be one continuous Bash-enabled Claude session running
+# SKILL.md steps 6-8 itself; here the backend renders between short, narrowly-scoped Claude
+# calls instead.
+
+def _render_output(paths: dict) -> dict:
+    """Deterministic backend render of the CV. Returns {"page_count": int} for PDF, or
+    {"stats": {...}} (docx_stats proxy numbers) for DOCX -- whatever the QA prompt needs.
+    Claude never writes the HTML itself (see fill_html.py) -- it only ever writes
+    content_file; this fills the template from that record before rendering."""
+    output_format = paths["output_format"]
+    content = json.loads(paths["content_file"].read_text())
+    if output_format == "pdf":
+        html = fill_html.fill_cv_html(content)
+        paths["html_file"].write_text(html)
+        page_count = render_pdf.render(str(paths["html_file"]), str(paths["output_file"]))
+        return {"page_count": page_count}
+    render_docx.build(content, str(paths["output_file"]))
+    return {"stats": docx_stats.compute_stats(paths["content_file"])}
+
+
+def _render_cover_letter_output(paths: dict) -> None:
+    """Same idea for the optional cover letter -- no iteration loop for it (its review is a
+    single self-review before finalizing, per cover-letter-standards.md), just one
+    deterministic render right after the CV's."""
+    if paths.get("cl_output_file") is None:
+        return
+    content = json.loads(paths["cl_content_file"].read_text())
+    if paths["output_format"] == "pdf":
+        html = fill_html.fill_cover_letter_html(content)
+        paths["cl_html_file"].write_text(html)
+        render_pdf.render(str(paths["cl_html_file"]), str(paths["cl_output_file"]))
+    else:
+        render_cover_letter_docx.build(content, str(paths["cl_output_file"]))
+
+
+def _read_target_pages(summary_file: Path) -> int:
+    """The candidate's page budget (1 or 2), per cv-standards.md's years-of-relevant-
+    experience rule -- Claude determines and writes this during drafting (it's a judgment
+    call informed by the CV, not something this backend should decide); this just reads it
+    back so the render/QA loop knows what to compare the rendered page count against."""
+    try:
+        data = json.loads(summary_file.read_text())
+        pages = int(data.get("target_pages", 1))
+        return pages if pages in (1, 2) else 1
+    except (json.JSONDecodeError, OSError, ValueError, TypeError):
+        return 1
+
+
+def _append_cut_note(summary_file: Path) -> None:
+    """Records that a QA round actually cut content, without spending a whole extra Claude
+    call just to update this one changelog line."""
+    try:
+        data = json.loads(summary_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return
+    changes = data.get("changes")
+    if not isinstance(changes, list):
+        changes = []
+    changes.append("Further condensed to fit the page budget.")
+    data["changes"] = changes
+    summary_file.write_text(json.dumps(data))
+
+
+def _qa_prompt(paths: dict, render_result: dict, target_pages: int, qa_result_file: Path, round_num: int) -> str:
+    is_last = round_num >= MAX_QA_ROUNDS
+    if paths["output_format"] == "pdf":
+        result_line = (
+            f"Your CV just rendered to {render_result['page_count']} page(s) (target: {target_pages}). "
+            f"Read the rendered PDF at {paths['output_file']} and check it per cv-standards.md step 8's "
+            f"QA checklist: spacing, overlap/cutoff text, empty-field gaps, thin extra pages."
+        )
+        fix_instruction = (
+            f"cut per cv-standards.md's cut order and ranking and/or fix the issue, rewrite "
+            f"{paths['content_file']} -- the app re-fills the HTML and re-renders after you write it"
+        )
+    else:
+        result_line = (
+            f"Length-proxy stats for the rendered DOCX (target: {target_pages} page(s)): "
+            f"{render_result['stats']}. Read {paths['content_file']} and sanity-check its structure "
+            f"per cv-standards.md step 8 (comfortably-1-page tends to land ~550-650 narrative words / "
+            f"<16-18 bullets)."
+        )
+        fix_instruction = f"cut per cv-standards.md's cut order and ranking, rewrite {paths['content_file']}"
+
+    if is_last:
+        verdict_instruction = (
+            f"This is the final check (the cut-and-recheck cap is reached) -- if it's still over "
+            f"budget or has an issue, {fix_instruction} one last time only if you're confident it "
+            f"genuinely helps; otherwise proceed with the best version and note the unresolved "
+            f'concern. Either way, write exactly {{"status": "pass"}} to {qa_result_file} when done '
+            f"-- do not render yourself."
+        )
+    else:
+        verdict_instruction = (
+            f'If it\'s within budget and looks correct, write exactly {{"status": "pass"}} to '
+            f"{qa_result_file}. Otherwise, {fix_instruction} -- do not render yourself, the app "
+            f're-renders deterministically after you write the file -- then write exactly {{"status": '
+            f'"revise"}} to {qa_result_file}.'
+        )
+
+    return f"{result_line}\n\n{verdict_instruction}"
+
+
+def _classify_qa_event(tool_name: str, counts: dict) -> Optional[tuple[str, int]]:
+    if tool_name == "Read" and counts["Read"] == 1:
+        return ("Reading the rendered result…", 91)
+    return None
+
+
+def _try_css_fit(paths: dict, base_html: str, target_pages: int) -> Optional[tuple[int, int]]:
+    """Tries fill_html.CSS_TWEAKS cumulatively against an already-rendered near-miss
+    (exactly one page over budget), re-rendering after each, stopping at the first fit.
+    Returns (page_count, tweaks_used) on success, None if no tweak combination fit --
+    caller is responsible for restoring base_html and re-rendering in that case."""
+    for count in range(1, len(fill_html.CSS_TWEAKS) + 1):
+        tweaked = fill_html.apply_css_tweaks(base_html, count)
+        paths["html_file"].write_text(tweaked)
+        page_count = render_pdf.render(str(paths["html_file"]), str(paths["output_file"]))
+        if page_count == target_pages:
+            return page_count, count
+    return None
+
+
+def _run_render_qa_loop(run_id: str, run_dir: Path, paths: dict) -> bool:
+    """Deterministic backend render, then a Claude-driven visual-QA/cut loop (Read/Write
+    only, no Bash) capped at MAX_QA_ROUNDS extra rounds, matching SKILL.md step 8's
+    iteration cap. Returns True if the loop completed (the final round always ends with a
+    "pass" write, whether or not it's genuinely within budget); False if a QA call itself
+    failed to run -- the job has already been marked done+errored in that case, so the
+    caller should just return."""
+    summary_file = paths["summary_file"]
+    target_pages = _read_target_pages(summary_file)
+    qa_result_file = run_dir / "qa_result.json"
+
+    RUNS[run_id].update(step="Rendering your document…", percent=85)
+    render_result = _render_output(paths)
+    _render_cover_letter_output(paths)
+
+    if paths["output_format"] == "pdf" and render_result["page_count"] == target_pages + 1:
+        # A one-page-over near-miss: try a cosmetic CSS squeeze before spending a whole
+        # Claude QA call on what might just be spacing. Only the first two (imperceptible)
+        # tweaks skip the QA call outright -- fitting via the harder tweaks (3-5) still
+        # gets a real visual check below, since denser content is more likely to look
+        # visibly cramped after that much squeeze.
+        base_html = paths["html_file"].read_text()
+        fit = _try_css_fit(paths, base_html, target_pages)
+        if fit is not None:
+            page_count, tweaks_used = fit
+            render_result = {"page_count": page_count}
+            if tweaks_used <= 2:
+                return True
+        else:
+            paths["html_file"].write_text(base_html)
+            page_count = render_pdf.render(str(paths["html_file"]), str(paths["output_file"]))
+            render_result = {"page_count": page_count}
+
+    for round_num in range(MAX_QA_ROUNDS + 1):
+        qa_result_file.unlink(missing_ok=True)
+        RUNS[run_id].update(step="Running visual QA…", percent=min(90 + round_num * 2, 97))
+
+        cmd = [
+            "claude", "-p",
+            _qa_prompt(paths, render_result, target_pages, qa_result_file, round_num),
+            "--output-format", "stream-json",
+            "--verbose",
+            "--permission-mode", "bypassPermissions",
+            "--allowedTools", QA_ALLOWED_TOOLS,
+            "--disallowedTools", DISALLOWED_TOOLS,
+            "--add-dir", str(run_dir),
+        ]
+
+        counts = {"Read": 0, "Write": 0}
+
+        def on_event(block, counts=counts):
+            if block.get("type") != "tool_use":
+                return
+            name = block.get("name")
+            if name in counts:
+                counts[name] += 1
+            classification = _classify_qa_event(name, counts)
+            if classification:
+                step, percent = classification
+                if percent > RUNS[run_id]["percent"]:
+                    RUNS[run_id].update(step=step, percent=percent)
+
+        ok, tail_output = claude_runner.run_single_call(
+            run_id, cmd, PROJECT_ROOT, run_dir, on_event, RUNS,
+            timeout_seconds=CLAUDE_TIMEOUT_SECONDS, fail_messages=FUNNY_ERROR_MESSAGES,
+        )
+        if not ok:
+            return False
+        if not qa_result_file.exists():
+            error_file = run_dir / "error.txt"
+            if error_file.exists():
+                RUNS[run_id].update(done=True, error=error_file.read_text())
+            else:
+                print(
+                    f"[cv-tailor] job {run_id} QA round {round_num} produced no result:\n{tail_output}",
+                    file=sys.stderr,
+                )
+                RUNS[run_id].update(done=True, error=random.choice(FUNNY_ERROR_MESSAGES))
+            return False
+
+        try:
+            qa = json.loads(qa_result_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            qa = {}
+        if qa.get("status") != "revise" or round_num == MAX_QA_ROUNDS:
+            break
+
+        RUNS[run_id].update(step="Re-rendering…", percent=93)
+        render_result = _render_output(paths)
+        _render_cover_letter_output(paths)
+        _append_cut_note(summary_file)
+
+    return True
 
 
 def _finalize_application_run(run_id: str) -> None:
@@ -233,11 +464,21 @@ def _finalize_application_run(run_id: str) -> None:
 
     if is_filed:
         application = db.find_or_create_application(user_id, company_name, company_slug, role_name, role_slug)
-        db.create_application_attempt(
+        attempt = db.create_application_attempt(
             application["id"], output_format, download_name, folder_path, has_cover_letter, created_at
         )
+        # Correct even on a repeat tailoring run for the same role -- keeps the most
+        # recently pasted/fetched posting text.
+        db.set_application_job_details(application["id"], run.get("job_url"), run.get("job_text"))
         run["application"] = {
             "pending": False, "company_name": company_name, "role_name": role_name, "created_at": created_at,
+            # Lets the Tailor success screen offer the same apply/un-apply toggle the
+            # Tailored CVs/Applications tables have, without a trip to another tab.
+            # attempt_id stays correct across any later revision on this run -- a
+            # revision overwrites the file in place, it never creates a new attempt row.
+            "application_id": application["id"],
+            "attempt_id": attempt["id"],
+            "is_applied": application["applied_attempt_id"] == attempt["id"],
         }
     else:
         missing_fields = [name for name, value in (("company_name", company_name), ("role_name", role_name)) if not value]
@@ -261,10 +502,22 @@ def _read_rationale(run_dir: Path) -> Optional[dict]:
         return None
     if not isinstance(data, dict):
         return None
+    requirements = []
+    for r in data.get("requirements", []):
+        if not isinstance(r, dict):
+            continue
+        name = str(r.get("name", "")).strip()
+        status = r.get("status")
+        if not name or status not in ("matched", "listed_only", "missing"):
+            continue
+        requirements.append({
+            "name": name, "status": status, "evidence": str(r.get("evidence", "")).strip(),
+        })
     return {
         "summary": str(data.get("summary", "")).strip(),
         "changes": [str(c).strip() for c in data.get("changes", []) if str(c).strip()],
         "review_note": str(data.get("review_note", "")).strip(),
+        "requirements": requirements,
     }
 
 
@@ -361,7 +614,16 @@ right after getting the job description, before tailoring the content. If you ge
 determine a field from the job posting, leave it as "" rather than guessing -- do not invent a
 plausible-looking company or role name."""
 
-    job_line = f"Job posting URL: {job_url}" if job_url else f"Job description text:\n{job_text}"
+    if job_url and job_text:
+        job_line = (
+            f"Job posting URL: {job_url}\n"
+            f"Candidate also pasted this job description text as a fallback/reference -- use it if "
+            f"the URL fails or returns too little, and cross-check against it otherwise:\n{job_text}"
+        )
+    elif job_url:
+        job_line = f"Job posting URL: {job_url}"
+    else:
+        job_line = f"Job description text:\n{job_text}"
     notes_line = (
         f"Additional notes/comments from the candidate (apply these to the CV content itself as "
         f"you tailor it — e.g. update contact/location fields or add the detail somewhere visible "
@@ -370,6 +632,7 @@ plausible-looking company or role name."""
     )
 
     cover_letter_block = ""
+    cover_letter_content_file = cover_letter_html_file = None
     if wants_cover_letter:
         cover_letter_content_file = run_dir / "cover_letter_content.json"
         cover_letter_html_file = run_dir / "cover_letter.html"
@@ -379,12 +642,19 @@ plausible-looking company or role name."""
             template_suffix = cover_letter_template_suffix
             template_path = run_dir / f"cover_letter_template{template_suffix}"
             _save_upload_with_limit(cover_letter_template, template_path, MAX_CV_BYTES, "Cover letter template")
+            if template_suffix == ".docx":
+                # Extracted here (not by Claude via Bash) -- see the script-import note above.
+                template_text_path = run_dir / "cover_letter_template.txt"
+                template_text_path.write_text(extract_docx.extract(str(template_path)))
+                template_read_line = f"Read tool on {template_text_path} (already extracted from the original .docx)"
+            else:
+                template_read_line = f"Read tool directly on {template_path}"
             template_line = (
-                f"The candidate provided a previous cover letter as a style/structure reference at "
-                f"{template_path} (.docx -> extract with {EXTRACT_SCRIPT} first, .txt/.pdf read directly). "
-                f"Use it as your model for voice, structure, and opening style, but rewrite the substance "
-                f"for this specific job posting and this candidate's actual tailored background -- never "
-                f"carry over the old letter's company name, role, or specific claims into the new one."
+                f"The candidate provided a previous cover letter as a style/structure reference -- "
+                f"{template_read_line}. Use it as your model for voice, structure, and opening style, "
+                f"but rewrite the substance for this specific job posting and this candidate's actual "
+                f"tailored background -- never carry over the old letter's company name, role, or "
+                f"specific claims into the new one."
             )
 
         guidance_line = ""
@@ -417,17 +687,6 @@ phrasing:
   "Referenced the company's stated focus on sustainability from their careers page"), or skip
   that bullet entirely if research didn't surface anything worth using."""
 
-        if output_format == "pdf":
-            cover_letter_render_step = (
-                f"fill templates/cover_letter.html placeholders with this record, write "
-                f"{cover_letter_html_file}, then run "
-                f"`{VENV_PY} {RENDER_PDF_SCRIPT} {cover_letter_html_file} {cover_letter_file}`"
-            )
-        else:
-            cover_letter_render_step = (
-                f"run `{VENV_PY} {RENDER_COVER_LETTER_DOCX_SCRIPT} {cover_letter_content_file} {cover_letter_file}`"
-            )
-
         cover_letter_block = f"""
 Also write a tailored cover letter for this same role, using the reviewed CV content record at
 {content_file} and the job posting above -- reuse full_name/email/phone/location from that
@@ -436,24 +695,16 @@ record rather than re-reading the raw CV file.
 {guidance_line}
 {research_line}
 
-Cover letter content rules:
-- 3-4 body paragraphs, ~250-400 words total. Professional, direct tone -- no generic filler
-  ("I am writing to express my interest...").
-- Open by naming the specific role and one concrete reason it's a strong fit.
-- Body: the 2-3 strongest, most concrete matches between the candidate's actual background (per
-  the content record) and this job's requirements -- specific outcomes/scope, not restated bullet
-  points. Never invent achievements, numbers, or experience not already in the content record or
-  explicitly stated in the candidate's guidance above.
-- Close with a brief, confident call to action.
-- Address a named hiring manager/company if the job posting gives one, otherwise "Dear Hiring
-  Manager,".
+Apply cover-letter-standards.md (same directory as SKILL.md) in full for content rules -- it's the
+actual rule set, not background reading. Before finalizing, run its mandatory "Review" section
+against your draft and fix anything that fails.
 
 Structure it as this JSON: {{"full_name": "", "contact_line": "email | phone | location, same
 style as the CV contact line", "date": "today's date, e.g. 'March 3, 2026'", "salutation": "",
 "paragraphs": ["", "..."], "closing": "e.g. 'Sincerely,'", "signature_name": ""}}
 
-Write that JSON to exactly {cover_letter_content_file}. Then {cover_letter_render_step} to
-produce exactly {cover_letter_file} ({output_format.upper()} format).
+Write that JSON to exactly {cover_letter_content_file} -- do not render it yourself and do not write
+HTML, the app fills the template and renders it after you finish.
 
 If the cover letter can't be produced for some reason, note it in {summary_file}'s "review_note"
 and skip it -- don't fail the whole run over it."""
@@ -461,32 +712,38 @@ and skip it -- don't fail the whole run over it."""
     prompt = f"""Use the tailor-cv skill's process to tailor this CV to this job posting.
 
 Master CV content record (already parsed and reviewed once -- read this directly as step 3's
-output; do NOT re-read a raw CV file or run extract_docx.py against it): {master_content_file}
+output; do NOT re-read a raw CV file): {master_content_file}
 {job_line}
 {photo_line}
 {notes_line}
 Output format: {output_format}
 
-Follow the skill's steps exactly from step 2 onward (get job description, tailor content,
-independent review pass with fixes, render, visually/structurally QA the result) -- skip step 1
-and step 3's extraction, using the master CV content record above as step 3's output directly. Do
-not overwrite {master_content_file} itself -- write your tailored result only to {content_file}.
-Override the default output/<slug> naming: write the final {output_format.upper()} to exactly
-{output_file}. Also write the reviewed content JSON record (after step 5's review) to exactly
-{content_file} regardless of output format -- this is the source of truth if the candidate later
-asks for a revision. For PDF output, write the filled HTML to exactly {html_file} before rendering
-(so a later revision can find and re-fill it).
+Follow the skill's steps from step 2 through step 5 (get job description, tailor content,
+independent review pass with fixes) -- skip step 1 and step 3's extraction, using the master CV
+content record above as step 3's output directly. Do not render or QA anything yourself; the app
+renders and runs the visual-QA/cut loop separately after you finish. Do not overwrite
+{master_content_file} itself -- write your tailored result only to {content_file}. Also write the
+reviewed content JSON record (after step 5's review) to exactly {content_file} regardless of
+output format -- this is the source of truth for rendering and any later revision, including the
+HTML the app fills and renders for PDF output; you never write HTML yourself.
+
+Also determine, per cv-standards.md's years-of-relevant-experience rule, this candidate's page
+budget for this application: 1 (under 10 years of relevant experience) or 2 (10+ years).
 
 Also write the step 9 report as JSON to exactly {summary_file}, with this schema:
 {{"summary": "one or two sentence overview of the tailoring approach", "changes": ["short bullet
 describing one change, written for the candidate to read, under ~100 characters", "..."],
 "review_note": "short note on what the independent review pass caught and fixed, or empty string
-if nothing needed fixing"}}
+if nothing needed fixing", "target_pages": 1 or 2 as determined above,
+"requirements": [{{"name": "requirement extracted in step 4", "status": "matched" (woven into a
+bullet) | "listed_only" (in Skills but not demonstrated) | "missing" (no material for it),
+"evidence": "short excerpt of the bullet that demonstrates it -- omit for listed_only/missing"}},
+"..."] -- a rollup of the relevance-mapping already done in step 5, not a new judgment call}}
 {metadata_block}
 {cover_letter_block}
 
 If you cannot proceed (e.g. the job URL is blocked and no job text was given), write a short
-explanation to {run_dir / 'error.txt'} instead of an output file, and stop."""
+explanation to {run_dir / 'error.txt'} instead, and stop."""
 
     RUNS[run_id] = {
         "step": "Starting…",
@@ -508,13 +765,28 @@ explanation to {run_dir / 'error.txt'} instead of an output file, and stop."""
         "run_dir": run_dir,
         "metadata_file": metadata_file,
         "application": None,
+        # Already known server-side before the subprocess even starts -- persisted verbatim
+        # in _finalize_application_run once the application row exists, no AI involved.
+        "job_url": job_url or None,
+        "job_text": job_text or None,
+    }
+
+    paths = {
+        "output_file": output_file,
+        "output_format": output_format,
+        "content_file": content_file,
+        "html_file": html_file if output_format == "pdf" else None,
+        "summary_file": summary_file,
+        "cl_content_file": cover_letter_content_file,
+        "cl_html_file": cover_letter_html_file if output_format == "pdf" else None,
+        "cl_output_file": cover_letter_file if wants_cover_letter else None,
     }
 
     run_allowed_tools = (
         TAILOR_FROM_MASTER_ALLOWED_TOOLS_WITH_WEB_SEARCH if wants_company_research else TAILOR_FROM_MASTER_ALLOWED_TOOLS
     )
     thread = threading.Thread(
-        target=_run_claude, args=(run_id, prompt, run_dir, output_file, run_allowed_tools), daemon=True
+        target=_run_claude, args=(run_id, prompt, run_dir, paths, run_allowed_tools), daemon=True
     )
     thread.start()
 
@@ -632,36 +904,20 @@ def revise_tailor(run_id: str, feedback: str = Form(...), user=Depends(auth.get_
     html_file = run_dir / "output.html"
     summary_file = run_dir / "summary.json"
 
-    if output_format == "pdf":
-        render_step = (
-            f"refill {html_file} with the updated record and run "
-            f"`{VENV_PY} {RENDER_PDF_SCRIPT} {html_file} {output_file}`"
-        )
-    else:
-        render_step = f"run `{VENV_PY} {RENDER_DOCX_SCRIPT} {content_file} {output_file}`"
-
     cover_letter_file = run.get("cover_letter_file")
     cover_letter_content_file = run_dir / "cover_letter_content.json"
+    has_cover_letter = cover_letter_content_file.exists() and cover_letter_file is not None
+    cover_letter_html_file = run_dir / "cover_letter.html"
     cover_letter_revise_block = ""
-    if cover_letter_content_file.exists() and cover_letter_file is not None:
-        if output_format == "pdf":
-            cl_html_file = run_dir / "cover_letter.html"
-            cl_render_step = (
-                f"refill {cl_html_file} with the updated record and run "
-                f"`{VENV_PY} {RENDER_PDF_SCRIPT} {cl_html_file} {cover_letter_file}`"
-            )
-        else:
-            cl_render_step = (
-                f"run `{VENV_PY} {RENDER_COVER_LETTER_DOCX_SCRIPT} "
-                f"{cover_letter_content_file} {cover_letter_file}`"
-            )
+    if has_cover_letter:
         cover_letter_revise_block = f"""
 
 A cover letter was also generated for this run, with its own content record at
 {cover_letter_content_file}. If (and only if) the feedback above relates to the cover letter,
 apply the same targeted-edit approach there: read {cover_letter_content_file}, edit only what
-the feedback addresses, overwrite it, then {cl_render_step} to produce exactly
-{cover_letter_file}. Leave the cover letter file untouched if the feedback is only about the CV."""
+the feedback addresses, overwrite it -- do not render it or write HTML yourself, the app fills the
+template and renders it after you finish. Leave the cover letter file(s) untouched if the feedback
+is only about the CV."""
 
     prompt = f"""You are revising a previously tailored CV based on specific candidate feedback. Do
 not start over or re-tailor from scratch -- make the minimum edit that satisfies the feedback below
@@ -679,18 +935,16 @@ Steps:
    claims not already present in the record or explicitly stated in the feedback -- if the
    feedback asks for something unsupported, write a short explanation to {run_dir / 'error.txt'}
    instead of guessing, and stop without touching any other file.
-3. Overwrite {content_file} with the updated record (same JSON schema as before).
-4. Re-render to exactly {output_file} ({output_format.upper()} format): {render_step}.
-5. Re-run the length/QA check the skill's step 8 describes (the edit may have changed length) --
-   cut only if this edit pushed it over the page limit, and cut from what the edit added first,
-   not unrelated content that was already fine.
-6. Update {summary_file}: append one short bullet to "changes" describing what this revision did
-   (don't remove or reword the existing entries), and update "review_note" only if this revision
-   fixes something it previously flagged.
+3. Overwrite {content_file} with the updated record (same JSON schema as before). Do not render,
+   write HTML, or QA anything yourself -- the app fills the template, renders, and runs the
+   visual-QA/cut loop separately after you finish.
+4. Update {summary_file}: append one short bullet to "changes" describing what this revision did
+   (don't remove or reword the existing entries, and don't touch "target_pages"), and update
+   "review_note" only if this revision fixes something it previously flagged.
 {cover_letter_revise_block}
 
 If you cannot proceed, write a short explanation to {run_dir / 'error.txt'} instead of touching
-{output_file}, and stop."""
+{content_file}, and stop."""
 
     run.update(
         step="Applying your feedback…",
@@ -702,8 +956,19 @@ If you cannot proceed, write a short explanation to {run_dir / 'error.txt'} inst
         revision_count=revision_count + 1,
     )
 
+    paths = {
+        "output_file": output_file,
+        "output_format": output_format,
+        "content_file": content_file,
+        "html_file": html_file if output_format == "pdf" else None,
+        "summary_file": summary_file,
+        "cl_content_file": cover_letter_content_file if has_cover_letter else None,
+        "cl_html_file": cover_letter_html_file if has_cover_letter and output_format == "pdf" else None,
+        "cl_output_file": cover_letter_file if has_cover_letter else None,
+    }
+
     thread = threading.Thread(
-        target=_run_revision, args=(run_id, prompt, run_dir, output_file, cover_letter_file), daemon=True
+        target=_run_revision, args=(run_id, prompt, run_dir, paths), daemon=True
     )
     thread.start()
 
@@ -745,9 +1010,7 @@ def _classify_event(tool_name: str, counts: dict) -> Optional[tuple[str, int]]:
             return ("Running an independent review pass…", 58)
         return ("Double-checking the revised draft…", 74)
     if tool_name == "Write":
-        return ("Preparing the tailored document…", 85)
-    if tool_name == "Bash":
-        return ("Rendering your document…", 94)
+        return ("Preparing the tailored document…", 80)
     return None
 
 
@@ -756,30 +1019,38 @@ def _classify_revision_event(tool_name: str, counts: dict) -> Optional[tuple[str
         return ("Reading your feedback into context…", 20)
     if tool_name == "Write":
         return ("Applying your changes…", 60)
-    if tool_name == "Bash":
-        return ("Re-rendering your CV…", 90)
     return None
 
 
-def _run_process_and_finalize(run_id, cmd, run_dir, on_event, success_check, on_success=None):
-    claude_runner.run_process_and_finalize(
-        run_id, cmd, PROJECT_ROOT, run_dir, on_event, success_check, RUNS,
-        timeout_seconds=CLAUDE_TIMEOUT_SECONDS, fail_messages=FUNNY_ERROR_MESSAGES,
-        on_success=on_success,
-    )
+def _fail_run(run_id: str, context: str) -> None:
+    """Marks a run done+errored after an unexpected exception in this backend's own
+    post-draft orchestration (rendering, the QA loop, finalizing) -- none of that runs
+    inside claude_runner's subprocess-streaming try/except, so without this a bug here
+    (a corrupt content.json, a Playwright/render crash, a disk error) would otherwise
+    leave the job stuck at done=False forever, exactly what A1 fixed for the streaming
+    part alone."""
+    job = RUNS.get(run_id)
+    if job is None or job.get("cancelled"):
+        return
+    print(f"[cv-tailor] job {run_id} crashed {context}:\n{traceback.format_exc()}", file=sys.stderr)
+    job.update(done=True, error=random.choice(FUNNY_ERROR_MESSAGES))
 
 
-def _run_claude(run_id: str, prompt: str, run_dir: Path, output_file: Path, allowed_tools: str = TAILOR_FROM_MASTER_ALLOWED_TOOLS):
+def _run_claude(run_id: str, draft_prompt: str, run_dir: Path, paths: dict, allowed_tools: str = TAILOR_FROM_MASTER_ALLOWED_TOOLS):
+    """Orchestrates a fresh tailoring run: one Claude call to draft+review (no Bash --
+    it only reads/writes files), then a backend-rendered, backend-orchestrated visual-QA/
+    cut loop (see _run_render_qa_loop), then the existing move-to-permanent-storage finalize."""
     cmd = [
-        "claude", "-p", prompt,
+        "claude", "-p", draft_prompt,
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--allowedTools", allowed_tools,
+        "--disallowedTools", DISALLOWED_TOOLS,
         "--add-dir", str(run_dir),
     ]
 
-    counts = {"Read": 0, "WebFetch": 0, "WebSearch": 0, "Agent": 0, "Write": 0, "Bash": 0}
+    counts = {"Read": 0, "WebFetch": 0, "WebSearch": 0, "Agent": 0, "Write": 0}
     state = {"tailoring_step_shown": False, "seen_fetch_or_read": False}
 
     def on_event(block):
@@ -801,35 +1072,75 @@ def _run_claude(run_id: str, prompt: str, run_dir: Path, output_file: Path, allo
                 if 42 > RUNS[run_id]["percent"]:
                     RUNS[run_id].update(step="Tailoring your content to the role…", percent=42)
 
-    def on_success():
-        _finalize_application_run(run_id)
-        RUNS[run_id]["rationale"] = _read_rationale(RUNS[run_id]["run_dir"])
-
-    _run_process_and_finalize(
-        run_id, cmd, run_dir, on_event, success_check=output_file.exists, on_success=on_success,
+    ok, tail_output = claude_runner.run_single_call(
+        run_id, cmd, PROJECT_ROOT, run_dir, on_event, RUNS,
+        timeout_seconds=CLAUDE_TIMEOUT_SECONDS, fail_messages=FUNNY_ERROR_MESSAGES,
     )
+    if not ok:
+        return
+
+    if not paths["content_file"].exists():
+        error_file = run_dir / "error.txt"
+        if error_file.exists():
+            RUNS[run_id].update(done=True, error=error_file.read_text())
+        else:
+            print(f"[cv-tailor] job {run_id} failed without an output file:\n{tail_output}", file=sys.stderr)
+            RUNS[run_id].update(done=True, error=random.choice(FUNNY_ERROR_MESSAGES))
+        return
+
+    # Everything from here on is this backend's own logic (rendering, the QA loop,
+    # finalizing) -- none of it runs inside claude_runner's subprocess try/except, so it
+    # needs its own safety net (see _fail_run).
+    try:
+        if not _run_render_qa_loop(run_id, run_dir, paths):
+            return
+
+        _finalize_application_run(run_id)
+        if RUNS[run_id].get("error"):
+            RUNS[run_id]["done"] = True
+        else:
+            RUNS[run_id]["rationale"] = _read_rationale(RUNS[run_id]["run_dir"])
+            RUNS[run_id].update(step="Done!", percent=100, done=True, error=None)
+    except Exception:
+        _fail_run(run_id, "during rendering/QA/finalize")
 
 
-def _run_revision(run_id: str, prompt: str, run_dir: Path, output_file: Path, cover_letter_file: Optional[Path] = None):
-    # Captured before the attempt starts: output_file already exists (it's the previous,
+def _run_revision(run_id: str, edit_prompt: str, run_dir: Path, paths: dict):
+    """Orchestrates a revision: one Claude call to apply the targeted edit (Read/Write
+    only), then the same backend render + visual-QA/cut loop fresh tailoring uses."""
+    try:
+        _run_revision_inner(run_id, edit_prompt, run_dir, paths)
+    finally:
+        # Always reset, regardless of which branch/return below was hit -- this used to
+        # happen unconditionally after the single call to run_process_and_finalize; the
+        # multi-call orchestration below has several exit points, so a try/finally is what
+        # actually guarantees that instead of a reset duplicated at each return site.
+        if run_id in RUNS:
+            RUNS[run_id]["revising"] = False
+
+
+def _run_revision_inner(run_id: str, edit_prompt: str, run_dir: Path, paths: dict):
+    content_file = paths["content_file"]
+    cl_content_file = paths["cl_content_file"]
+    # Captured before the attempt starts: content_file already exists (it's the previous,
     # still-valid result), so "did this attempt do anything" has to be judged by whether
     # it actually got rewritten, not just whether it exists. Feedback might target only the
-    # cover letter, so a change to either file (not just the CV) counts as a real attempt.
-    pre_mtime = output_file.stat().st_mtime if output_file.exists() else None
-    cl_pre_mtime = None
-    if cover_letter_file is not None and cover_letter_file.exists():
-        cl_pre_mtime = cover_letter_file.stat().st_mtime
+    # cover letter, so a change to either content record (not just the CV's) counts as a
+    # real attempt.
+    pre_mtime = content_file.stat().st_mtime if content_file.exists() else None
+    cl_pre_mtime = cl_content_file.stat().st_mtime if cl_content_file is not None and cl_content_file.exists() else None
 
     cmd = [
-        "claude", "-p", prompt,
+        "claude", "-p", edit_prompt,
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--allowedTools", REVISE_ALLOWED_TOOLS,
+        "--disallowedTools", DISALLOWED_TOOLS,
         "--add-dir", str(run_dir),
     ]
 
-    counts = {"Read": 0, "Write": 0, "Bash": 0}
+    counts = {"Read": 0, "Write": 0}
 
     def on_event(block):
         if block.get("type") != "tool_use":
@@ -843,20 +1154,37 @@ def _run_revision(run_id: str, prompt: str, run_dir: Path, output_file: Path, co
             if percent > RUNS[run_id]["percent"]:
                 RUNS[run_id].update(step=step, percent=percent)
 
-    def success_check():
-        cv_changed = output_file.exists() and (pre_mtime is None or output_file.stat().st_mtime > pre_mtime)
-        cl_changed = (
-            cover_letter_file is not None and cover_letter_file.exists()
-            and (cl_pre_mtime is None or cover_letter_file.stat().st_mtime > cl_pre_mtime)
-        )
-        return cv_changed or cl_changed
-
-    _run_process_and_finalize(
-        run_id, cmd, run_dir, on_event, success_check,
-        on_success=lambda: RUNS[run_id].update(rationale=_read_rationale(run_dir)),
+    ok, tail_output = claude_runner.run_single_call(
+        run_id, cmd, PROJECT_ROOT, run_dir, on_event, RUNS,
+        timeout_seconds=CLAUDE_TIMEOUT_SECONDS, fail_messages=FUNNY_ERROR_MESSAGES,
     )
-    if run_id in RUNS:
-        RUNS[run_id]["revising"] = False
+    if not ok:
+        return
+
+    cv_changed = content_file.exists() and (pre_mtime is None or content_file.stat().st_mtime > pre_mtime)
+    cl_changed = (
+        cl_content_file is not None and cl_content_file.exists()
+        and (cl_pre_mtime is None or cl_content_file.stat().st_mtime > cl_pre_mtime)
+    )
+    if not (cv_changed or cl_changed):
+        error_file = run_dir / "error.txt"
+        if error_file.exists():
+            RUNS[run_id].update(done=True, error=error_file.read_text())
+        else:
+            print(f"[cv-tailor] job {run_id} revision made no change:\n{tail_output}", file=sys.stderr)
+            RUNS[run_id].update(done=True, error=random.choice(FUNNY_ERROR_MESSAGES))
+        return
+
+    # Same reasoning as _run_claude: this backend's own rendering/QA-loop logic has no
+    # safety net of its own, so it needs one here.
+    try:
+        if not _run_render_qa_loop(run_id, run_dir, paths):
+            return
+
+        RUNS[run_id]["rationale"] = _read_rationale(run_dir)
+        RUNS[run_id].update(step="Done!", percent=100, done=True, error=None)
+    except Exception:
+        _fail_run(run_id, "during rendering/QA/finalize")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,21 @@ def init_db() -> None:
 _APPLICATIONS_COLUMN_MIGRATIONS = [
     ("applied_attempt_id", "INTEGER REFERENCES application_attempts(id) ON DELETE SET NULL"),
     ("applied_at", "TEXT"),
+    ("stage", "TEXT NOT NULL DEFAULT 'tailored'"),
+    ("archived_reason", "TEXT"),
+    ("salary_min", "INTEGER"),
+    ("salary_max", "INTEGER"),
+    ("salary_currency", "TEXT DEFAULT 'USD'"),
+    ("location", "TEXT"),
+    ("work_model", "TEXT"),
+    ("job_url", "TEXT"),
+    ("job_description_raw", "TEXT"),
+    ("notes", "TEXT"),
+    ("follow_up_due_date", "TEXT"),
+    # No NOT NULL/default here even though schema.sql's fresh-install CREATE TABLE has
+    # one -- SQLite's ALTER TABLE ADD COLUMN rejects a non-constant default (a strftime()
+    # call) even under NOT NULL; backfilled separately below instead.
+    ("updated_at", "TEXT"),
 ]
 
 
@@ -58,6 +73,12 @@ def _migrate_applications_columns() -> None:
         for name, ddl in _APPLICATIONS_COLUMN_MIGRATIONS:
             if name not in columns:
                 conn.execute(f"ALTER TABLE applications ADD COLUMN {name} {ddl}")
+        conn.execute("UPDATE applications SET updated_at = created_at WHERE updated_at IS NULL")
+        # One-time backfill for anyone upgrading from before `stage` existed: promote
+        # the legacy status='applied' rows so they don't silently vanish from the new
+        # stage-aware Applications view. Naturally idempotent -- a row already migrated
+        # has stage != 'tailored' (its just-added default), so re-running is a no-op.
+        conn.execute("UPDATE applications SET stage = 'applied' WHERE status = 'applied' AND stage = 'tailored'")
 
 
 # -- users --------------------------------------------------------------------
@@ -198,8 +219,19 @@ def list_applications_tree(user_id: int) -> list:
                 "role_name": a["role_name"],
                 "role_slug": a["role_slug"],
                 "status": a["status"],
+                "stage": a["stage"],
+                "archived_reason": a["archived_reason"],
                 "applied_attempt_id": a["applied_attempt_id"],
                 "applied_at": a["applied_at"],
+                "salary_min": a["salary_min"],
+                "salary_max": a["salary_max"],
+                "salary_currency": a["salary_currency"],
+                "location": a["location"],
+                "work_model": a["work_model"],
+                "job_url": a["job_url"],
+                "job_description_raw": a["job_description_raw"],
+                "notes": a["notes"],
+                "follow_up_due_date": a["follow_up_due_date"],
                 "attempts": [
                     {
                         "id": at["id"],
@@ -248,23 +280,95 @@ def mark_application_applied(application_id: int, attempt_id: int) -> "sqlite3.R
     stamps *now* as the applied date. Safe to call again on an already-applied
     application to switch which attempt is "the" applied one (this also
     refreshes applied_at to now) -- callers are responsible for verifying both
-    ids belong to the same user/application first."""
+    ids belong to the same user/application first.
+
+    Promotes stage to 'applied' only if it's still at the default 'tailored' --
+    re-picking which attempt counts as "the applied one" for a role already
+    further along (e.g. interviewing) must not regress its stage."""
     with _conn() as conn:
+        row = conn.execute("SELECT stage FROM applications WHERE id = ?", (application_id,)).fetchone()
+        was_tailored = row is not None and row["stage"] == "tailored"
         conn.execute(
             """UPDATE applications SET status = 'applied', applied_attempt_id = ?,
-               applied_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?""",
+               applied_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+               stage = CASE WHEN stage = 'tailored' THEN 'applied' ELSE stage END,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?""",
             (attempt_id, application_id),
         )
+        if was_tailored:
+            conn.execute(
+                "INSERT INTO application_activities (application_id, activity_type, description) "
+                "VALUES (?, 'stage_change', 'Moved to applied')",
+                (application_id,),
+            )
         return conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
 
 
 def unmark_application_applied(application_id: int) -> "sqlite3.Row | None":
+    """Full undo, matching its existing framing in the UI ("Applied -- remove"):
+    resets status/attempt/date and drops stage back to 'tailored' unconditionally,
+    however far along it had gotten."""
     with _conn() as conn:
         conn.execute(
-            "UPDATE applications SET status = NULL, applied_attempt_id = NULL, applied_at = NULL WHERE id = ?",
+            """UPDATE applications SET status = NULL, applied_attempt_id = NULL, applied_at = NULL,
+               stage = 'tailored', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?""",
             (application_id,),
         )
         return conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+
+
+def update_application_stage(application_id: int, stage: str, description: "str | None" = None) -> "sqlite3.Row | None":
+    """Free-form stage transition (any stage to any stage) -- real job searches don't
+    move linearly (ghosting, re-opened roles, correcting a mis-click). Callers are
+    responsible for only allowing this once an application has actually been applied
+    (see routes_applications.py's guard); this function itself doesn't re-check that."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE applications SET stage = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+            (stage, application_id),
+        )
+        conn.execute(
+            "INSERT INTO application_activities (application_id, activity_type, description) VALUES (?, 'stage_change', ?)",
+            (application_id, description or f"Moved to {stage}"),
+        )
+        return conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+
+
+def update_application_details(application_id: int, **fields) -> "sqlite3.Row | None":
+    """Partial update over the manual CRM fields (salary/location/work_model/notes/
+    follow_up_due_date/archived_reason) -- only touches columns actually passed."""
+    allowed = {
+        "salary_min", "salary_max", "salary_currency", "location", "work_model",
+        "notes", "follow_up_due_date", "archived_reason",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    with _conn() as conn:
+        if updates:
+            set_clause = ", ".join(f"{k} = ?" for k in updates)
+            conn.execute(
+                f"UPDATE applications SET {set_clause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+                (*updates.values(), application_id),
+            )
+        return conn.execute("SELECT * FROM applications WHERE id = ?", (application_id,)).fetchone()
+
+
+def set_application_job_details(application_id: int, job_url: "str | None", job_description_raw: "str | None") -> None:
+    """Persists the job posting text/URL verbatim, no AI involved -- called once when the
+    application row is created (and again on any later re-tailor, keeping the most recent
+    posting text)."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE applications SET job_url = ?, job_description_raw = ? WHERE id = ?",
+            (job_url or None, job_description_raw or None, application_id),
+        )
+
+
+def list_application_activities(application_id: int) -> list:
+    with _conn() as conn:
+        return conn.execute(
+            "SELECT * FROM application_activities WHERE application_id = ? ORDER BY event_date DESC",
+            (application_id,),
+        ).fetchall()
 
 
 # -- pending_attempts ------------------------------------------------------------

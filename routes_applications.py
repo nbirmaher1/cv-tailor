@@ -78,6 +78,22 @@ class ApplyAttempt(BaseModel):
     attempt_id: int
 
 
+class UpdateStage(BaseModel):
+    stage: str  # 'applied' | 'screening' | 'interviewing' | 'offer' | 'archived'
+    note: Optional[str] = None
+
+
+class UpdateDetails(BaseModel):
+    salary_min: Optional[int] = None
+    salary_max: Optional[int] = None
+    salary_currency: Optional[str] = None
+    location: Optional[str] = None
+    work_model: Optional[str] = None
+    notes: Optional[str] = None
+    follow_up_due_date: Optional[str] = None
+    archived_reason: Optional[str] = None
+
+
 # -- filed applications ---------------------------------------------------------
 
 @router.get("")
@@ -114,6 +130,36 @@ def unapply_application(application_id: int, user=Depends(auth.get_current_user)
     _get_owned_application(application_id, user["id"])
     db.unmark_application_applied(application_id)
     return {"ok": True}
+
+
+VALID_STAGES = ("applied", "screening", "interviewing", "offer", "archived")
+
+
+@router.patch("/{application_id}/stage")
+def update_stage(application_id: int, body: UpdateStage, user=Depends(auth.get_current_user)):
+    application = _get_owned_application(application_id, user["id"])
+    if body.stage not in VALID_STAGES:
+        raise HTTPException(400, "Invalid stage.")
+    if application["applied_attempt_id"] is None:
+        # Moving out of 'tailored' only ever happens through the attempt-specific /apply
+        # action above -- "which tailored CV did I apply with" stays a deliberate choice
+        # rather than a side effect of picking a stage from a dropdown.
+        raise HTTPException(400, "Mark this application as applied first (pick which tailored CV you used).")
+    db.update_application_stage(application_id, body.stage, body.note)
+    return {"ok": True}
+
+
+@router.patch("/{application_id}/details")
+def update_details(application_id: int, body: UpdateDetails, user=Depends(auth.get_current_user)):
+    _get_owned_application(application_id, user["id"])
+    db.update_application_details(application_id, **body.model_dump(exclude_unset=True))
+    return {"ok": True}
+
+
+@router.get("/{application_id}/activities")
+def get_activities(application_id: int, user=Depends(auth.get_current_user)):
+    _get_owned_application(application_id, user["id"])
+    return db.list_application_activities(application_id)
 
 
 @router.get("/attempts/{attempt_id}/result")

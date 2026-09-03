@@ -69,7 +69,7 @@ def test_resolve_slugs_role_scoped_to_company(_isolate):
 
 # -- _finalize_application_run -------------------------------------------------
 
-def _seed_run(run_id, run_dir, user_id, metadata=None, output_format="pdf"):
+def _seed_run(run_id, run_dir, user_id, metadata=None, output_format="pdf", job_url=None, job_text=None):
     run_dir.mkdir(parents=True)
     output_file = run_dir / f"output.{output_format}"
     output_file.write_bytes(b"%PDF-1.4 fake")
@@ -85,6 +85,8 @@ def _seed_run(run_id, run_dir, user_id, metadata=None, output_format="pdf"):
         "metadata_file": run_dir / "metadata.json",
         "application": None,
         "error": None,
+        "job_url": job_url,
+        "job_text": job_text,
     }
     return run_dir
 
@@ -204,3 +206,320 @@ def test_resolve_pending_rejects_blank_fields(_isolate, tmp_path):
 
     resp = client.patch(f"/api/applications/pending/{pending_id}", json={"company_name": "", "role_name": "Engineer"})
     assert resp.status_code == 400
+
+
+# -- stage/CRM column migration -------------------------------------------------------
+
+def test_stage_migration_backfills_legacy_applied_status(tmp_path, monkeypatch):
+    # Simulates a real pre-existing local install: an `applications` table from before
+    # `stage` existed, with a genuine status='applied' row -- the exact situation the
+    # user's own account was in when this migration shipped. Deliberately bypasses
+    # db.init_db() to build that legacy shape directly, since a fresh init already has
+    # every current column.
+    legacy_db_path = tmp_path / "legacy.db"
+    monkeypatch.setattr(db, "DB_PATH", legacy_db_path)
+    with db._conn() as conn:
+        conn.executescript("""
+            CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, password_hash TEXT);
+            CREATE TABLE applications (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              company_name TEXT NOT NULL, company_slug TEXT NOT NULL,
+              role_name TEXT NOT NULL, role_slug TEXT NOT NULL,
+              status TEXT,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            );
+        """)
+        conn.execute("INSERT INTO users (id, email, password_hash) VALUES (1, 'a@b.com', 'x')")
+        conn.execute(
+            "INSERT INTO applications (user_id, company_name, company_slug, role_name, role_slug, status) "
+            "VALUES (1, 'Acme', 'acme', 'Engineer', 'engineer', 'applied')"
+        )
+        conn.execute(
+            "INSERT INTO applications (user_id, company_name, company_slug, role_name, role_slug, status) "
+            "VALUES (1, 'Beta', 'beta', 'Analyst', 'analyst', NULL)"
+        )
+
+    db._migrate_applications_columns()
+
+    with db._conn() as conn:
+        rows = {r["company_slug"]: r["stage"] for r in conn.execute("SELECT company_slug, stage FROM applications")}
+    assert rows == {"acme": "applied", "beta": "tailored"}
+
+
+def test_stage_migration_is_idempotent(tmp_path, monkeypatch):
+    legacy_db_path = tmp_path / "legacy2.db"
+    monkeypatch.setattr(db, "DB_PATH", legacy_db_path)
+    with db._conn() as conn:
+        conn.executescript("""
+            CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, password_hash TEXT);
+            CREATE TABLE applications (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+              company_name TEXT NOT NULL, company_slug TEXT NOT NULL,
+              role_name TEXT NOT NULL, role_slug TEXT NOT NULL, status TEXT,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            );
+        """)
+        conn.execute(
+            "INSERT INTO applications (user_id, company_name, company_slug, role_name, role_slug, status) "
+            "VALUES (1, 'Acme', 'acme', 'Engineer', 'engineer', 'applied')"
+        )
+
+    db._migrate_applications_columns()
+    # A user manually moves it further along after the migration -- re-running the
+    # migration (e.g. on the next app restart) must not regress that.
+    with db._conn() as conn:
+        conn.execute("UPDATE applications SET stage = 'interviewing' WHERE company_slug = 'acme'")
+
+    db._migrate_applications_columns()
+
+    with db._conn() as conn:
+        stage = conn.execute("SELECT stage FROM applications WHERE company_slug = 'acme'").fetchone()["stage"]
+    assert stage == "interviewing"
+
+
+# -- stage/CRM db functions ------------------------------------------------------------
+
+def _make_application_with_attempt(user_id):
+    application = db.find_or_create_application(user_id, "Acme Corp", "acme-corp", "Engineer", "engineer")
+    attempt = db.create_application_attempt(
+        application["id"], "pdf", "tailored_cv", f"users/{user_id}/applications/acme-corp/engineer/2026-01-01", False,
+        "2026-01-01T00:00:00.000000Z",
+    )
+    return application["id"], attempt["id"]
+
+
+def test_mark_applied_promotes_stage_from_tailored(_isolate):
+    user_id = _isolate
+    application_id, attempt_id = _make_application_with_attempt(user_id)
+    assert db.find_application_by_id(application_id, user_id)["stage"] == "tailored"
+
+    db.mark_application_applied(application_id, attempt_id)
+
+    row = db.find_application_by_id(application_id, user_id)
+    assert row["stage"] == "applied"
+    activities = db.list_application_activities(application_id)
+    assert len(activities) == 1
+    assert activities[0]["activity_type"] == "stage_change"
+
+
+def test_mark_applied_does_not_regress_an_already_advanced_stage(_isolate):
+    user_id = _isolate
+    application_id, attempt_id = _make_application_with_attempt(user_id)
+    db.mark_application_applied(application_id, attempt_id)
+    db.update_application_stage(application_id, "interviewing")
+
+    # Re-picking which attempt counts as "the applied one" must not regress the stage.
+    db.mark_application_applied(application_id, attempt_id)
+
+    assert db.find_application_by_id(application_id, user_id)["stage"] == "interviewing"
+
+
+def test_unmark_applied_resets_stage_to_tailored(_isolate):
+    user_id = _isolate
+    application_id, attempt_id = _make_application_with_attempt(user_id)
+    db.mark_application_applied(application_id, attempt_id)
+    db.update_application_stage(application_id, "offer")
+
+    db.unmark_application_applied(application_id)
+
+    row = db.find_application_by_id(application_id, user_id)
+    assert row["stage"] == "tailored"
+    assert row["applied_attempt_id"] is None
+    assert row["applied_at"] is None
+
+
+def test_update_application_stage_logs_activity_with_custom_description(_isolate):
+    user_id = _isolate
+    application_id, attempt_id = _make_application_with_attempt(user_id)
+    db.mark_application_applied(application_id, attempt_id)
+
+    db.update_application_stage(application_id, "screening", description="Phone screen scheduled for Friday")
+
+    activities = db.list_application_activities(application_id)
+    assert activities[0]["description"] == "Phone screen scheduled for Friday"
+    assert db.find_application_by_id(application_id, user_id)["stage"] == "screening"
+
+
+def test_list_application_activities_ordered_most_recent_first(_isolate):
+    user_id = _isolate
+    application_id, attempt_id = _make_application_with_attempt(user_id)
+    db.mark_application_applied(application_id, attempt_id)
+    db.update_application_stage(application_id, "screening")
+    db.update_application_stage(application_id, "interviewing")
+
+    activities = db.list_application_activities(application_id)
+
+    assert [a["description"] for a in activities] == [
+        "Moved to interviewing", "Moved to screening", "Moved to applied",
+    ]
+
+
+def test_update_application_details_partial_update_only_touches_given_fields(_isolate):
+    user_id = _isolate
+    application_id, _ = _make_application_with_attempt(user_id)
+
+    db.update_application_details(application_id, salary_min=90000, salary_max=110000, location="Remote")
+    row = db.find_application_by_id(application_id, user_id)
+    assert row["salary_min"] == 90000
+    assert row["salary_max"] == 110000
+    assert row["location"] == "Remote"
+    assert row["notes"] is None
+
+    db.update_application_details(application_id, notes="Great culture fit")
+    row = db.find_application_by_id(application_id, user_id)
+    assert row["notes"] == "Great culture fit"
+    assert row["salary_min"] == 90000  # untouched by the second call
+
+
+def test_update_application_details_ignores_unknown_fields(_isolate):
+    user_id = _isolate
+    application_id, _ = _make_application_with_attempt(user_id)
+
+    # Must not raise or write to an arbitrary column just because a caller passed one.
+    db.update_application_details(application_id, stage="hacked", id=999)
+
+    row = db.find_application_by_id(application_id, user_id)
+    assert row["stage"] == "tailored"
+    assert row["id"] == application_id
+
+
+def test_set_application_job_details_persists_job_text(_isolate):
+    user_id = _isolate
+    application_id, _ = _make_application_with_attempt(user_id)
+
+    db.set_application_job_details(application_id, None, "We are hiring a backend engineer...")
+
+    row = db.find_application_by_id(application_id, user_id)
+    assert row["job_url"] is None
+    assert row["job_description_raw"] == "We are hiring a backend engineer..."
+
+
+def test_list_applications_tree_includes_new_crm_fields(_isolate):
+    user_id = _isolate
+    application_id, _ = _make_application_with_attempt(user_id)
+    db.update_application_details(application_id, location="Remote", work_model="remote")
+
+    tree = db.list_applications_tree(user_id)
+
+    role = tree[0]["roles"][0]
+    assert role["stage"] == "tailored"
+    assert role["location"] == "Remote"
+    assert role["work_model"] == "remote"
+
+
+# -- PATCH .../stage, PATCH .../details, GET .../activities ---------------------------
+
+def test_stage_endpoint_requires_applied_first(_isolate):
+    user_id = _isolate
+    application_id, _ = _make_application_with_attempt(user_id)
+
+    resp = client.patch(f"/api/applications/{application_id}/stage", json={"stage": "screening"})
+
+    assert resp.status_code == 400
+
+
+def test_stage_endpoint_rejects_invalid_stage(_isolate):
+    user_id = _isolate
+    application_id, attempt_id = _make_application_with_attempt(user_id)
+    db.mark_application_applied(application_id, attempt_id)
+
+    resp = client.patch(f"/api/applications/{application_id}/stage", json={"stage": "tailored"})
+
+    assert resp.status_code == 400
+
+
+def test_stage_endpoint_updates_stage_and_logs_activity(_isolate):
+    user_id = _isolate
+    application_id, attempt_id = _make_application_with_attempt(user_id)
+    db.mark_application_applied(application_id, attempt_id)
+
+    resp = client.patch(f"/api/applications/{application_id}/stage", json={"stage": "interviewing", "note": "Round 2 next week"})
+
+    assert resp.status_code == 200
+    assert db.find_application_by_id(application_id, user_id)["stage"] == "interviewing"
+    activities_resp = client.get(f"/api/applications/{application_id}/activities")
+    assert activities_resp.status_code == 200
+    assert activities_resp.json()[0]["description"] == "Round 2 next week"
+
+
+def test_stage_endpoint_is_ownership_checked():
+    resp = client.patch("/api/applications/999999/stage", json={"stage": "applied"})
+    assert resp.status_code == 404
+
+
+def test_details_endpoint_updates_and_returns_ok(_isolate):
+    user_id = _isolate
+    application_id, _ = _make_application_with_attempt(user_id)
+
+    resp = client.patch(f"/api/applications/{application_id}/details", json={"location": "Berlin", "salary_min": 80000})
+
+    assert resp.status_code == 200
+    row = db.find_application_by_id(application_id, user_id)
+    assert row["location"] == "Berlin"
+    assert row["salary_min"] == 80000
+
+
+def test_details_endpoint_is_ownership_checked():
+    resp = client.patch("/api/applications/999999/details", json={"location": "Berlin"})
+    assert resp.status_code == 404
+
+
+def test_activities_endpoint_empty_before_any_stage_change(_isolate):
+    user_id = _isolate
+    application_id, _ = _make_application_with_attempt(user_id)
+
+    resp = client.get(f"/api/applications/{application_id}/activities")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+# -- job_url/job_description_raw persistence -------------------------------------------
+
+def test_finalize_persists_job_text_no_url(_isolate, tmp_path):
+    user_id = _isolate
+    run_dir = _seed_run(
+        "run-jd1", tmp_path / "runs" / "run-jd1", user_id,
+        {"company_name": "Acme", "role_name": "Engineer"},
+        job_text="We are hiring a backend engineer to own our payments API.",
+    )
+    app_module._finalize_application_run("run-jd1")
+
+    tree = client.get("/api/applications").json()
+    role = tree[0]["roles"][0]
+    assert role["job_url"] is None
+    assert role["job_description_raw"] == "We are hiring a backend engineer to own our payments API."
+
+
+def test_finalize_persists_job_url(_isolate, tmp_path):
+    user_id = _isolate
+    _seed_run(
+        "run-jd2", tmp_path / "runs" / "run-jd2", user_id,
+        {"company_name": "Acme", "role_name": "Engineer"},
+        job_url="https://example.com/jobs/123",
+    )
+    app_module._finalize_application_run("run-jd2")
+
+    tree = client.get("/api/applications").json()
+    role = tree[0]["roles"][0]
+    assert role["job_url"] == "https://example.com/jobs/123"
+    assert role["job_description_raw"] is None
+
+
+def test_finalize_keeps_most_recent_job_text_on_re_tailor(_isolate, tmp_path):
+    user_id = _isolate
+    _seed_run(
+        "run-jd3a", tmp_path / "runs" / "run-jd3a", user_id,
+        {"company_name": "Acme", "role_name": "Engineer"}, job_text="First posting version.",
+    )
+    app_module._finalize_application_run("run-jd3a")
+    _seed_run(
+        "run-jd3b", tmp_path / "runs" / "run-jd3b", user_id,
+        {"company_name": "Acme", "role_name": "Engineer"}, job_text="Updated posting version.",
+    )
+    app_module._finalize_application_run("run-jd3b")
+
+    tree = client.get("/api/applications").json()
+    role = tree[0]["roles"][0]
+    assert role["job_description_raw"] == "Updated posting version."

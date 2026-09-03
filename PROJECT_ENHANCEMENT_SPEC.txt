@@ -1,0 +1,654 @@
+================================================================================
+CV-TAILOR: ARCHITECTURE, PRODUCT SPECIFICATION & ENHANCEMENT ROADMAP
+================================================================================
+Target Audience: Claude AI Agent / Human Developer
+Purpose: Comprehensive technical context, system architecture baseline, database
+         schemas, API contracts, AI prompt adjustments, UI component blueprints,
+         and visual wireframe examples to implement Visual Feedback & Application
+         Pipeline Management.
+File Version: 1.1 (2026 Edition - Comprehensive Reference)
+Project Root: /Users/nathanbirmaher/projects/cv-tailor
+================================================================================
+
+--------------------------------------------------------------------------------
+1. SYSTEM OVERVIEW & CURRENT ARCHITECTURAL BASELINE
+--------------------------------------------------------------------------------
+cv-tailor is a local-first, privacy-respecting career management and CV tailoring
+application. It operates with zero marginal API cost by executing headlessly
+against the user's local, logged-in Claude Code CLI session (`claude -p`).
+
+Core Tech Stack:
+- Backend: Python 3.9+ / FastAPI / Uvicorn (binds strictly to 127.0.0.1:8420)
+- Database: SQLite (data/cvtailor.db) with WAL mode, foreign keys, and local auth
+- Document Rendering:
+  * PDF: Playwright / Chromium headless rendering from HTML templates (templates/default.html)
+  * DOCX: python-docx programmatic XML generation (scripts/render_docx.py)
+  * DOCX Extraction: python-docx text parser (scripts/extract_docx.py)
+  * Length QA: pypdf page count checks (scripts/render_pdf.py) and word/bullet heuristics (scripts/docx_stats.py)
+- Frontend: Single-page application using Semantic HTML5, Vanilla JavaScript, and Tailwind CSS.
+- Subprocess Engine: claude_runner.py manages `claude -p` streaming JSON output,
+  progress step tracking from tool events (Read, WebFetch, WebSearch, Agent, Write, Bash),
+  and process cancellation/timeout management.
+- Anti-Hallucination Gate: 2-pass review subagent (Agent tool) enforcing cv-standards.md
+  to ensure all tailored bullet points and metrics trace strictly to source data.
+
+Data Storage Hierarchy:
+- data/
+  ├── cvtailor.db (SQLite database)
+  └── users/
+      └── <user_id>/
+          ├── master_cv/
+          │   ├── content.json (Canonical structured master CV record)
+          │   └── photo.<ext> (Optional candidate headshot)
+          ├── applications/
+          │   └── <company_slug>/
+          │       └── <role_slug>/
+          │           └── <attempt_slug_timestamp>/
+          │               ├── content.json (Tailored CV JSON record)
+          │               ├── output.pdf / output.docx
+          │               ├── output.html (For PDF re-renders)
+          │               ├── summary.json (AI tailoring rationale and review notes)
+          │               ├── metadata.json (Company and role auto-detection)
+          │               ├── cover_letter_content.json (Optional)
+          │               └── cover_letter.pdf / cover_letter.docx (Optional)
+          └── pending/ (Inbox for completed runs where company/role was ambiguous)
+
+Canonical Content JSON Schema (content.json):
+{
+  "full_name": str,
+  "target_title": str,
+  "email": str,
+  "phone": str,
+  "location": str,
+  "links": str,
+  "work_authorization": str,
+  "photo_path": str | null,
+  "summary": str,
+  "experience": [
+    {
+      "title": str,
+      "company": str,
+      "location": str,
+      "dates": str,
+      "bullets": [str]
+    }
+  ],
+  "education": [
+    {
+      "degree": str,
+      "school": str,
+      "location": str,
+      "dates": str
+    }
+  ],
+  "skills": [
+    {
+      "category": str | null,
+      "items": [str]
+    }
+  ],
+  "languages": [str],
+  "extra_sections": [
+    {
+      "heading": str,
+      "items": [str]
+    }
+  ]
+}
+
+--------------------------------------------------------------------------------
+2. STRATEGIC PILLARS & DESIGN PHILOSOPHY
+--------------------------------------------------------------------------------
+1. Local-First & Zero Cost:
+   All personal candidate data, resumes, job descriptions, and notes remain
+   strictly on the user's local disk. No third-party SaaS fees or API key management.
+2. Anti-Hallucination & Truth Enforcement:
+   Never invent skills, titles, metrics, or responsibilities. Tailoring means
+   rephrasing, reordering, prioritizing, and mapping terminology—never fabricating.
+3. ATS-First Machine Compatibility:
+   Single-column structure, clean hierarchy, standard section headers, no graphic
+   skill bars, no tables that break parsers, and strict page budgeting (1 page for
+   <10 years experience; exactly 2 pages for 10+ years).
+4. User Clarity & Confidence:
+   The candidate must always understand what changed, why it changed, and how
+   well the resulting document matches the target job posting.
+
+================================================================================
+3. FEATURE SPECIFICATION 1: VISUAL FEEDBACK & INTERACTIVE TAILORING UI
+================================================================================
+
+3.1 The Split-Screen Tailoring Workspace
+Replace the vertical card stack with a responsive, high-density split-pane layout:
+- Left Pane (Job Context & Intelligence, 38.2% width on desktop / full on mobile):
+  * Job Posting summary & raw JD drawer
+  * ATS Match Score (%) & Health Gauge
+  * Categorized Keyword Match/Gap Checklist
+  * AI Rationale ("What we changed & why")
+  * Subagent Review Log (Items flagged and corrected)
+  * Quick Revision Feedback Box
+- Right Pane (Document Workspace & Preview, 61.8% width):
+  * View Toggle Bar: [ PDF Render Preview ] [ Visual Redline Diff ] [ Raw JSON ]
+  * Document Switcher: [ CV Document ] [ Cover Letter ]
+  * Zoom / Page Controls (100%, Fit Width, Fit Page)
+  * Instant Action Bar: [ Download PDF ] [ Download DOCX ] [ Move to Applied ]
+
+--------------------------------------------------------------------------------
+VISUAL WIREFRAME: Split-Screen Tailoring Workspace
+--------------------------------------------------------------------------------
++-----------------------------------------------------------------------------------------------+
+|  cv-tailor                                     [ Tailor ] [ Pipeline Board ] [ My CV ] (User) |
++------------------------------------+----------------------------------------------------------+
+|  LEFT PANE: Job Context & Match   |  RIGHT PANE: Live Document Workspace                    |
+|                                    |                                                          |
+|  +-- ATS Match Score: 88% -------+ |  [ PDF Preview ] [ Side-by-Side Diff ] [ Raw JSON ]     |
+|  |  🟢 Hard Skills: 8/9          | |  ----------------------------------------------------  |
+|  |  🟡 Soft Skills: 4/5          | |                                                        |
+|  |  ⚪ Missing from CV: 2        | |    John Doe                                            |
+|  +-------------------------------+ |    Senior Full-Stack Engineer                          |
+|                                    |    john@example.com · +1-555-0199 · San Francisco      |
+|  +-- Keyword Gap Analyzer -------+ |                                                        |
+|  |  [+ React] [+ TypeScript]     | |    SUMMARY                                             |
+|  |  [+ GraphQL] [! Kubernetes]   | |    Engineered high-scale microservices...              |
+|  +-------------------------------+ |                                                        |
+|                                    |    EXPERIENCE                                          |
+|  +-- What Changed (AI Rationale)-+ |    Senior Engineer — Acme Corp (2022 - Present)        |
+|  |  • Emphasized ETL experience  | |    • Architected distributed streaming pipeline...      |
+|  |  • Merged duplicate bullets   | |    • [ ⚡ Polish ] [ ⚡ Quantify ] [ ⚡ Shorten ]       |
+|  +-------------------------------+ |                                                        |
+|  [ Want changes? Quick revise... ] |  [ ⬇ Download PDF ] [ ⬇ Download Word ] [ Mark Applied ] |
++------------------------------------+----------------------------------------------------------+
+
+3.2 ATS Keyword & Skill Match Analyzer
+The review pass generates structured keyword and skill match metadata.
+UI Components:
+- Overall Match Score Progress Ring / Bar (0 - 100%)
+- Categorized Skill Chips:
+  * Hard Skills / Tech Stack (e.g., Python, PostgreSQL, Docker, Kubernetes)
+  * Architecture & Methodologies (e.g., Microservices, CI/CD, TDD, REST)
+  * Soft Skills & Leadership (e.g., Cross-functional leadership, Mentorship)
+- Color and Status Hierarchy:
+  * Green Chip (🟢 Matched & Proven): Present in master CV and woven into tailored bullets.
+    Clicking scrolls the document directly to the relevant bullet.
+  * Yellow Chip (🟡 Listed Only): Present in Skills list but lacks achievement proof.
+  * Red Chip (🔴 Missing from CV): Found in JD but missing in Master CV.
+    Clicking triggers a quick-action: "Did you use this skill? Click to add to Master CV."
+
+--------------------------------------------------------------------------------
+VISUAL WIREFRAME: ATS Match & Keyword Breakdown
+--------------------------------------------------------------------------------
++------------------------------------------------------------------------+
+|  ATS MATCH ANALYSIS                                        Overall 86% |
+|  [████████████████████████████████████████░░░░░░░]                       |
++------------------------------------------------------------------------+
+|  HARD SKILLS & TECHNOLOGIES (8/9 Matched)                              |
+|  🟢 Python  🟢 PostgreSQL  🟢 Docker  🟢 FastAPI  🟢 Redis             |
+|  🟢 AWS     🟢 Playwright  🟢 Pytest   🔴 Kubernetes (Missing in CV)   |
+|                                                                        |
+|  METHODOLOGIES & ARCHITECTURE (4/4 Matched)                            |
+|  🟢 Microservices  🟢 CI/CD Pipelines  🟢 TDD  🟢 RESTful APIs         |
+|                                                                        |
+|  EXPERIENCE FIT                                                        |
+|  🟢 Years Required: 5+ years  | Candidate: 6.5 years                   |
+|  🟢 Seniority Match: Senior   | Education: B.Sc. Computer Science      |
++------------------------------------------------------------------------+
+
+3.3 Visual Side-by-Side Redline Diff Viewer
+A specialized view mode comparing the Master CV against the Tailored CV:
+- Side-by-side or inline redline rendering:
+  * Added content / keywords highlighted in green (bg-emerald-50 text-emerald-800)
+  * Removed / condensed content in strikethrough red (bg-rose-50 text-rose-800)
+  * Unchanged baseline text in neutral zinc
+- Change Badges:
+  * "Action verb strengthened"
+  * "Metric added from candidate notes"
+  * "Merged 2 redundant bullets into 1 high-impact bullet"
+  * "🛡️ AI Reviewer caught unsupported claim"
+
+--------------------------------------------------------------------------------
+VISUAL WIREFRAME: Side-by-Side Redline Comparison
+--------------------------------------------------------------------------------
++----------------------------------------------+----------------------------------------------------------+
+| MASTER CV (Original)                         | TAILORED CV (Optimized for Senior Backend Role)          |
++----------------------------------------------+----------------------------------------------------------+
+| Worked on customer data pipelines using      | Architected high-throughput ETL data pipelines using     |
+| Python and SQL, handling daily user logs.    | Python, PostgreSQL, and Redis, processing 12M+ logs/day. |
+| (Duty-framed, lacks metrics)                 | (Action verb + Tech keywords + Scale metric)             |
+|                                              |                                                          |
+| [- Built internal tool for sales team.]      | [Merged with revenue metrics above to prevent duplication] |
+|                                              |                                                          |
+| Managed AWS EC2 instances and deployments.   | Automated CI/CD deployment pipelines on AWS, reducing    |
+|                                              | deployment cycle time by 35%.                            |
++----------------------------------------------+----------------------------------------------------------+
+
+3.4 Section-Level Micro-Interactions & 1-Click Bullet Rewriter
+Hovering over any bullet in the preview/diff pane exposes micro-action buttons:
+- [ ⚡ Add Metric ]: Opens inline prompt: "What was the measurable outcome? (e.g. 25% reduction, $40k saved)"
+- [ ⚡ Make Shorter ]: Reduces line length by 20-30% while preserving impact.
+- [ ⚡ Stronger Verb ]: Upgrades passive verbs to strong action verbs (e.g., "Assisted with" -> "Spearheaded").
+- [ ↺ Reset ]: Restores the original bullet from the Master CV.
+
+--------------------------------------------------------------------------------
+VISUAL WIREFRAME: Inline Bullet Action Pills
+--------------------------------------------------------------------------------
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│ • Scaled backend microservices to support 450k active users across 3 regions.   │
+│   [ ⚡ Add Metric ] [ ⚡ Make Shorter ] [ ⚡ Stronger Verb ] [ ↺ Reset ]        │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+3.5 In-Browser DOCX Preview & Multi-Template ATS Switcher
+- Client-Side DOCX Preview:
+  Integrate a lightweight, zero-backend-dependency client renderer (`docx-preview` or `mammoth.js`)
+  so DOCX users can inspect document layout immediately in-app.
+- Curated ATS-Safe Templates:
+  1. Modern Tech Minimalist (Sans-Serif / Clean Inter - Current Default)
+  2. Classic Executive (Serif / Times/Georgia - Traditional Corporate)
+  3. Compact High-Density (Engineered for 8-10 yr candidates fitting exactly 1 page)
+
+3.6 Latency & AI Progress Experience (Agent Reasoning Transparency)
+Upgrade the loading state to an "Agentic Reasoning Drawer":
+
+--------------------------------------------------------------------------------
+VISUAL WIREFRAME: Agent Reasoning Transparency Loading State
+--------------------------------------------------------------------------------
++-----------------------------------------------------------------------+
+|  Tailoring your CV for Senior Backend Engineer @ Stripe...             |
+|                                                                       |
+|  [████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░] 60%           |
+|                                                                       |
+|  CURRENT STAGE: Independent Review Pass                               |
+|  ✓ Extracted Master CV (24 total achievements parsed)                 |
+|  ✓ Scraped Stripe JD (Identified 8 core competencies)                 |
+|  ✓ Drafted tailored Experience & Summary                              |
+|  ⟳ AI Reviewer checking for unsupported claims & duplicate bullets... |
+|  ○ Visual A4 Page Budget Verification (Playwright)                    |
+|                                                                       |
+|  [ Cancel Run ]                                                       |
++-----------------------------------------------------------------------+
+
+================================================================================
+4. FEATURE SPECIFICATION 2: APPLICATION PIPELINE MANAGEMENT (JOB SEARCH CRM)
+================================================================================
+
+4.1 The Visual Kanban Board
+Organize applications across standard hiring pipeline stages:
+1. 📝 TAILORED: CV/cover letter generated and verified; ready for submission.
+2. 📤 APPLIED: Submitted to company ATS/portal; timestamp recorded; exact PDF locked.
+3. 📞 SCREENING: Recruiter / HR phone screen scheduled or completed.
+4. 💻 INTERVIEWING: Technical interviews, system design, take-home tasks, onsite rounds.
+5. 🏆 OFFER: Verbal or written offer received; negotiation stage.
+6. 📁 ARCHIVED: Rejected, position closed, offer declined, or ghosted (>30 days inactive).
+
+--------------------------------------------------------------------------------
+VISUAL WIREFRAME: Drag-and-Drop Application Pipeline Kanban
+--------------------------------------------------------------------------------
++-------------------------------------------------------------------------------------------------------------------+
+|  APPLICATIONS PIPELINE                                       [ + New Application ] [ 📊 Funnel Metrics ] [ 🔍 Filter ] |
++------------------+------------------+---------------------+-------------------+-------------------+---------------+
+| 📝 TAILORED (4)  | 📤 APPLIED (12)  | 📞 SCREENING (3)    | 💻 INTERVIEWS (2) | 🏆 OFFER (1)      | 📁 ARCHIVED   |
++------------------+------------------+---------------------+-------------------+-------------------+---------------+
+| [ Stripe ]       | [ Airbnb ]       | [ Figma ]           | [ Linear ]        | [ Vercel ]        | [ Meta ]      |
+| Staff Backend    | Sr. Backend      | Tech Lead           | Full-Stack Eng    | Staff Engineer    | Sr. Engineer  |
+| 📅 Tailored 2h ago| 📅 Applied 3d ago| 📅 Screen: Tomorrow | 📅 Round 3: Friday| 💰 $210k + Equity | ❌ Rejected   |
+| 🎯 Match: 92%    | 🎯 Match: 88%    | 👤 Recruiter: Sarah | 👤 HM: Alex M.    | ⏳ Expires in 4d  | (Ghosted)     |
+| [ Ready to send ]| [ Follow-up in 2d]| [ View Prep Notes ] | [ Tech Questions ]| [ Review Offer ]  |               |
+|                  |                  |                     |                   |                   |               |
+| [ Datadog ]      | [ Notion ]       | [ Supabase ]        |                   |                   |               |
+| Cloud Architect  | Backend Infra    | Developer Advocate  |                   |                   |               |
+| 🎯 Match: 84%    | 📅 Applied 6d ago| 📅 Followed up      |                   |                   |               |
+|                  | ⚠️ Follow-up due |                     |                   |                   |               |
++------------------+------------------+---------------------+-------------------+-------------------+---------------+
+
+4.2 Rich Application Drawer / Slide-Over Modal
+Clicking any Kanban card opens a full detail drawer containing metadata, documents,
+contacts, notes, and AI interview copilot.
+
+--------------------------------------------------------------------------------
+VISUAL WIREFRAME: Application Detail Drawer & AI Interview Copilot
+--------------------------------------------------------------------------------
++------------------------------------------------------------------------------------+
+|  Stripe — Staff Backend Engineer                                        [ × Close ] |
+|  Stage: [ Interviewing ▼ ]  |  Applied on: Aug 18, 2026  |  Match Score: 92%        |
++------------------------------------------------------------------------------------+
+|  [ Overview ]  [ Tailored CV & Letter ]  [ AI Interview Prep ]  [ Activity Log ]    |
+|                                                                                    |
+|  COMPENSATION & DETAILS                                                            |
+|  • Salary Range: $190,000 - $220,000 + Equity                                      |
+|  • Location / Work Mode: Remote (US)                                               |
+|  • Job Posting URL: https://stripe.com/jobs/12345 [ ↗ Open ]                       |
+|                                                                                    |
+|  KEY CONTACTS                                                                      |
+|  • Recruiter: Sarah Jenkins (LinkedIn ↗) - sarah.j@stripe.com                      |
+|  • Hiring Manager: David Chen (Engineering Director)                              |
+|                                                                                    |
+|  ASSOCIATED DOCUMENTS                                                              |
+|  • Tailored CV: Nathan_Birmaher_Stripe_CV.pdf (Attempt #2 - Aug 18) [ Preview ]    |
+|  • Cover Letter: Nathan_Birmaher_Stripe_Letter.pdf [ Preview ]                     |
+|                                                                                    |
+|  AI INTERVIEW COPILOT                                                              |
+|  • Top 3 Predicted Technical Questions for this JD:                                |
+|    1. "Explain how you designed distributed streaming with Kafka & Python."        |
+|    2. "How would you handle idempotency in Stripe's webhook ingestion engine?"     |
+|    [ ⚡ Generate Suggested STAR Answers from My CV ]                               |
+|                                                                                    |
+|  NEXT ACTION REMINDER                                                              |
+|  ⏰ Follow-up with Sarah regarding Round 2 feedback (Due: Tomorrow at 10:00 AM)     |
+|  [ ⚡ Draft 1-Click Follow-Up Email ]                                               |
++------------------------------------------------------------------------------------+
+
+4.3 Automated Follow-Up & Stale Application Guardrails
+- Smart Follow-Up Alerts:
+  When an application has been in `Applied` stage for 5-7 days, the card displays a `⚠️ Follow-up Due` badge.
+- 1-Click Follow-Up Email Generator:
+  Generates a polite, targeted follow-up email based on the candidate's exact application.
+
+--------------------------------------------------------------------------------
+EXAMPLE PAYLOAD: 1-Click Follow-Up Email Draft
+--------------------------------------------------------------------------------
+Subject: Following up on Application for Staff Backend Engineer - Nathan Birmaher
+
+Hi Sarah,
+
+I hope you're having a great week.
+
+I'm checking in on the status of my application for the Staff Backend Engineer
+role at Stripe, submitted on August 18. I remain very enthusiastic about Stripe's
+work in distributed payments infrastructure, and I'm confident my background in
+scaling Python/Kafka data pipelines processing 12M+ daily events aligns closely
+with the team's needs.
+
+Please let me know if you need any additional details or work samples from my end.
+
+Best regards,
+Nathan Birmaher
+(555) 019-9283 · linkedin.com/in/nathan-birmaher
+
+4.4 Job Search Health & Funnel Analytics
+A dedicated "Analytics" view displaying search metrics over time.
+
+--------------------------------------------------------------------------------
+VISUAL WIREFRAME: Search Health & Funnel Metrics Dashboard
+--------------------------------------------------------------------------------
++------------------------------------------------------------------------------------+
+|  JOB SEARCH HEALTH & FUNNEL METRICS (Last 30 Days)                                 |
++------------------------------------------------------------------------------------+
+|  [ Total Tailored: 42 ]   [ Applied: 36 ]   [ Screens: 9 (25%) ]   [ Offers: 2 ]   |
+|                                                                                    |
+|  APPLICATION FUNNEL                                                                |
+|  Applied:     ==================================== (36)                            |
+|  Screening:   ========= (9) [25.0% conversion]                                     |
+|  Interviews:  ==== (4)      [11.1% conversion]                                     |
+|  Offers:      == (2)        [5.5% conversion]                                      |
+|                                                                                    |
+|  KEY INSIGHTS & CORRELATIONS                                                       |
+|  💡 Applications with Match Score > 85% had a 3.4x higher response rate (31% vs 9%)|
+|  💡 Average time from Applied ➔ First Response: 5.2 days                           |
+|  💡 Most successful keyword match: "FastAPI", "Distributed Systems", "Playwright" |
++------------------------------------------------------------------------------------+
+
+4.5 Multi-View Toggle:
+- Kanban View: Visual stage progression.
+- Table / Spreadsheet View: Dense sortable list by Date, Company, Match Score, Stage, Salary.
+- Calendar View: Scheduled screens, interviews, and follow-up deadlines.
+
+================================================================================
+5. UNIFIED WORKFLOW: SEQUENCE FLOW
+================================================================================
+
+```
+Candidate               Frontend (Web UI)            FastAPI Backend         Claude Subprocess (claude -p)
+    |                          |                            |                              |
+    |-- 1. Paste Job URL/Text->|                            |                              |
+    |                          |-- 2. POST /api/tailor/start->|                             |
+    |                          |                            |-- 3. Shell out to Claude --->|
+    |                          |<-- 4. Stream tool events --|                              |
+    |                          |   (Read, WebFetch, Agent)  |                              |
+    |                          |                            |<-- 5. Return JSON + Summary -|
+    |                          |<-- 6. Render PDF & Diff ---|    (Match Score: 88%)        |
+    |<-- 7. View Split-Screen -|                            |                              |
+    |    (PDF + Match + Diff)  |                            |                              |
+    |                          |                            |                              |
+    |-- 8. "⚡ Add Metric" --->|                            |                              |
+    |    (Micro-revision)      |-- 9. POST /quick-action -->|-- 10. Lightweight revise --->|
+    |                          |<-- 11. Updated bullet -----|<-- 12. Return updated -------|
+    |                          |                            |                              |
+    |-- 13. "Mark Applied" --->|-- 14. PATCH /stage -------->|                              |
+    |                          |   (Move to 'Applied')      |-- 15. Store in DB & FS ----->|
+    |                          |<-- 16. Update Kanban Board-|                              |
+    |                          |                            |                              |
+    |-- 17. Day 5: Follow-up ->|-- 18. POST /draft-followup->|                              |
+    |<-- 19. Copy Email Draft -|<-- 20. Return email text --|                              |
+```
+
+================================================================================
+6. DATABASE SCHEMA & PERSISTENCE UPDATES (data/cvtailor.db)
+================================================================================
+
+6.1 Applications Table Enhancements
+Update schema.sql and db.py migration handlers:
+
+```sql
+-- Updated schema for applications table
+CREATE TABLE IF NOT EXISTS applications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  company_name TEXT NOT NULL,
+  company_slug TEXT NOT NULL,
+  role_name TEXT NOT NULL,
+  role_slug TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT 'tailored', -- 'tailored', 'applied', 'screening', 'interviewing', 'offer', 'archived'
+  status TEXT,                          -- Legacy compatibility column ('applied', etc.)
+  applied_attempt_id INTEGER REFERENCES application_attempts(id) ON DELETE SET NULL,
+  applied_at TEXT,
+  salary_min INTEGER,
+  salary_max INTEGER,
+  salary_currency TEXT DEFAULT 'USD',
+  location TEXT,
+  work_model TEXT,                      -- 'remote', 'hybrid', 'onsite'
+  job_url TEXT,
+  job_description_raw TEXT,
+  match_score INTEGER,                  -- 0 - 100
+  match_analysis_json TEXT,             -- JSON breakdown of hard/soft skills matched/missing
+  recruiter_name TEXT,
+  recruiter_email TEXT,
+  recruiter_linkedin TEXT,
+  follow_up_due_date TEXT,
+  notes TEXT,
+  archived_reason TEXT,                 -- 'rejected', 'ghosted', 'declined', 'withdrawn'
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(user_id, company_slug, role_slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_applications_user_stage ON applications(user_id, stage);
+CREATE INDEX IF NOT EXISTS idx_applications_follow_up ON applications(user_id, follow_up_due_date);
+
+-- Application Activity Log Table for CRM timeline
+CREATE TABLE IF NOT EXISTS application_activities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  activity_type TEXT NOT NULL,          -- 'stage_change', 'note_added', 'interview_scheduled', 'follow_up_sent'
+  title TEXT NOT NULL,
+  description TEXT,
+  event_date TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activities_app ON application_activities(application_id);
+```
+
+6.2 SQLite Column Migration Helper (db.py)
+Ensure backward compatibility with existing databases:
+```python
+_APPLICATIONS_COLUMN_MIGRATIONS = [
+    ("stage", "TEXT NOT NULL DEFAULT 'tailored'"),
+    ("applied_attempt_id", "INTEGER REFERENCES application_attempts(id) ON DELETE SET NULL"),
+    ("applied_at", "TEXT"),
+    ("salary_min", "INTEGER"),
+    ("salary_max", "INTEGER"),
+    ("salary_currency", "TEXT DEFAULT 'USD'"),
+    ("location", "TEXT"),
+    ("work_model", "TEXT"),
+    ("job_url", "TEXT"),
+    ("job_description_raw", "TEXT"),
+    ("match_score", "INTEGER"),
+    ("match_analysis_json", "TEXT"),
+    ("recruiter_name", "TEXT"),
+    ("recruiter_email", "TEXT"),
+    ("recruiter_linkedin", "TEXT"),
+    ("follow_up_due_date", "TEXT"),
+    ("notes", "TEXT"),
+    ("archived_reason", "TEXT"),
+    ("updated_at", "TEXT"),
+]
+```
+
+================================================================================
+7. API CONTRACTS & BACKEND ENDPOINTS SPECIFICATION
+================================================================================
+
+7.1 Pipeline Management Endpoints (routes_applications.py)
+- `GET /api/applications/pipeline`
+  Returns grouped dictionary of applications by stage:
+  `{ "tailored": [...], "applied": [...], "screening": [...], "interviewing": [...], "offer": [...], "archived": [...] }`
+
+- `PATCH /api/applications/{application_id}/stage`
+  Updates application stage and logs activity:
+  Request Body: `{ "stage": "screening", "activity_note": "Phone screen with recruiter scheduled for Friday" }`
+
+- `GET /api/applications/{application_id}`
+  Returns complete application record, attempts history, match breakdown, and activity log.
+
+- `PATCH /api/applications/{application_id}/details`
+  Updates CRM details: salary, notes, recruiter contacts, follow-up date, etc.
+
+- `POST /api/applications/{application_id}/activities`
+  Appends an event/note to the application activity log.
+
+- `GET /api/applications/analytics`
+  Returns search funnel counts, conversion rates, average match score, and stage duration statistics.
+
+7.2 AI Tailoring & Copilot Endpoints (app.py)
+- `POST /api/tailor/{run_id}/bullet/quick-action`
+  Micro-revision for a single bullet point:
+  Request: `{ "bullet_text": str, "action_type": "add_metric" | "shorten" | "stronger_verb", "extra_context": str }`
+  Response: `{ "updated_bullet": str }`
+
+- `POST /api/applications/{application_id}/interview-prep`
+  Generates predicted interview questions and STAR talking points based on the application's stored JD and tailored CV record.
+
+- `POST /api/applications/{application_id}/draft-followup`
+  Generates a personalized, concise follow-up email to the recruiter.
+
+================================================================================
+8. AI PROMPT & OUTPUT SCHEMA SPECIFICATION (SKILL.md & summary.json)
+================================================================================
+
+8.1 Updated summary.json Output Schema:
+The prompt in SKILL.md and app.py instructs the Claude tailoring run to output
+a rich analytical summary:
+
+```json
+{
+  "summary": "Tailored for Stripe Staff Backend Engineer position.",
+  "match_score": 88,
+  "match_analysis": {
+    "hard_skills": [
+      { "name": "Python", "status": "matched", "evidence_bullet": "Engineered high-throughput ETL data pipelines using Python..." },
+      { "name": "PostgreSQL", "status": "matched", "evidence_bullet": "Optimized database query performance in PostgreSQL..." },
+      { "name": "Kubernetes", "status": "missing", "note": "Required in JD, not found in Master CV." }
+    ],
+    "architecture_and_tools": [
+      { "name": "Distributed Systems", "status": "matched" },
+      { "name": "CI/CD Pipelines", "status": "matched" }
+    ],
+    "soft_skills": [
+      { "name": "Technical Leadership", "status": "matched" }
+    ],
+    "experience_years_match": {
+      "required": "5+ years",
+      "candidate": "6.5 years",
+      "status": "met"
+    }
+  },
+  "changes": [
+    "Prioritized distributed streaming and ETL bullet points to match core requirements.",
+    "Integrated Redis caching achievement from notes.",
+    "Merged duplicate logging pipeline bullets into a single achievement.",
+    "Trimmed older unrelated retail experience to strictly maintain 1-page budget."
+  ],
+  "review_note": "Subagent review verified all claims against Master CV. Zero hallucinated metrics."
+}
+```
+
+8.2 Prompt Instructions for Bullet Quick-Actions:
+For single-bullet micro-edits, execute a lightweight prompt:
+"You are revising a single resume bullet point. Make the requested adjustment while adhering to cv-standards.md: action verb + task + measurable outcome. Hard limit: 28-32 words, max 2 rendered lines. Never fabricate experience not provided in context."
+
+================================================================================
+9. FRONTEND ARCHITECTURE & COMPONENT HIERARCHY
+================================================================================
+
+Modular JavaScript Organization (static/js/):
+- `common.js`: Auth checks, fetch wrappers, formatting utilities, theme handlers.
+- `auth.js`: Login, register, session management.
+- `master-cv.js`: Master CV upload, drag-and-drop parser, full structured form editor.
+- `tailor.js`: Split-pane tailoring workspace, run polling, live PDF preview, revision loop.
+- `match-analyzer.js`: Interactive ATS match gauge, keyword chips, drill-down tooltips.
+- `diff-viewer.js`: Side-by-side / inline redline diff comparison between Master & Tailored CV.
+- `pipeline-board.js`: Drag-and-drop Kanban board, column stage handlers, quick cards.
+- `pipeline-drawer.js`: Comprehensive slide-over application detail modal, CRM logging, interview copilot.
+- `pipeline-analytics.js`: Funnel chart rendering, conversion metrics, search health insights.
+
+DOM Structure Summary in static/index.html:
+- `<main data-screen="home">`: Overview snapshot, active job search metrics, recent activity.
+- `<main data-screen="tailor">`: Split-screen tailoring workspace (Left: Job context & match / Right: Document).
+- `<main data-screen="pipeline">`: Multi-view job CRM (Kanban board / Dense table / Calendar).
+- `<main data-screen="master-cv">`: Master CV structured editor.
+- `<div id="application-drawer">`: Slide-over detailed modal for CRM cards.
+
+================================================================================
+10. STEP-BY-STEP IMPLEMENTATION & PHASED ROLLOUT PLAN
+================================================================================
+
+Phase 1: Database & Pipeline Backend Core
+1. Update `schema.sql` and `db.py` to add new pipeline fields (`stage`, `salary`, `match_score`, etc.).
+2. Extend `routes_applications.py` with `/pipeline`, `/stage`, `/details`, and `/activities` endpoints.
+3. Add pytest test cases in `tests/test_applications.py` verifying stage transitions and activity logging.
+
+Phase 2: Visual Feedback & Split-Screen Workspace
+1. Update `app.py` prompt to generate rich `match_analysis` in `summary.json`.
+2. Redesign the Tailor screen in `static/index.html` into the dual-pane workspace.
+3. Build `match-analyzer.js` for color-coded skill chips and interactive document scrolling.
+4. Build `diff-viewer.js` for side-by-side redline diffing against `master_cv/content.json`.
+5. Integrate client-side DOCX previewing using `docx-preview`.
+
+Phase 3: Interactive Kanban & CRM Drawer
+1. Build `pipeline-board.js` with HTML5 Drag-and-Drop for stage transitions.
+2. Build `pipeline-drawer.js` for the slide-over detail modal, contacts, and activity notes.
+3. Implement follow-up due date calculations and visual health badges.
+4. Add 1-click follow-up email draft generator endpoint and UI button.
+
+Phase 4: Analytics & Interview Copilot
+1. Build `pipeline-analytics.js` for funnel conversion metrics and match correlations.
+2. Implement AI Interview Prep generator endpoint using tailored CV + JD context.
+3. Add Table and Calendar view modes to the pipeline screen.
+
+================================================================================
+11. TESTING & VERIFICATION STRATEGY
+================================================================================
+
+1. Automated Tests (pytest):
+   - `tests/test_pipeline.py`: Stage transitions, activity logging, ownership security checks.
+   - `tests/test_match_analysis.py`: Validation of match score calculation and JSON parsing.
+   - `tests/test_render_docx.py` & `test_render_pdf.py`: Multi-template verification.
+   - `tests/test_bullet_quick_action.py`: Micro-revision formatting and character limits.
+
+2. Manual Verification Checklist:
+   - Verify drag-and-drop card movement across all 6 Kanban columns.
+   - Test PDF and DOCX downloads from both the Tailor screen and the Kanban drawer.
+   - Verify that clicking a matched keyword chip scrolls directly to the corresponding bullet.
+   - Verify that follow-up alerts trigger correctly after the defined date thresholds.
+   - Confirm that all data remains local and no external requests are sent beyond Claude CLI.
+
+================================================================================
+END OF SPECIFICATION FILE
+================================================================================

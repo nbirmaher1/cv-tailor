@@ -58,6 +58,40 @@ function togglePasswordVisibility(inputEl, buttonEl) {
   buttonEl.querySelector('.eye-closed').classList.toggle('hidden', showing);
 }
 
+// Polls `statusUrl` every 800ms until the server reports `done`. Tolerates up to 3
+// consecutive failed status-fetches (a network blip) before giving up -- the job may
+// still be succeeding server-side even if one poll request drops, so aborting on the
+// very first failure would falsely report a working run as lost. Pass `cancelToken`
+// (a plain object) to let a caller cancel mid-poll: it gets `.reject` (call to abort
+// with a custom reason) and `.interval` (the setInterval id, for clearInterval).
+function pollJob(statusUrl, { onProgress, cancelToken } = {}) {
+  return new Promise((resolve, reject) => {
+    if (cancelToken) cancelToken.reject = reject;
+    let consecutiveFailures = 0;
+    const interval = setInterval(async () => {
+      try {
+        const resp = await apiFetch(statusUrl);
+        if (!resp.ok) throw new Error('Lost track of the job.');
+        const s = await resp.json();
+        consecutiveFailures = 0;
+        if (onProgress) onProgress(s);
+        if (s.done) {
+          clearInterval(interval);
+          if (s.error) reject(new Error(s.error));
+          else resolve(s);
+        }
+      } catch (err) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= 3) {
+          clearInterval(interval);
+          reject(err);
+        }
+      }
+    }, 800);
+    if (cancelToken) cancelToken.interval = interval;
+  });
+}
+
 function formatDate(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString.endsWith('Z') ? isoString : isoString + 'Z');

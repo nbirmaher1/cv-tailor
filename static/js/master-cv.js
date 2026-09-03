@@ -276,24 +276,11 @@ function createCvUploadWidget(el_, { onSaved, showState }) {
   });
 
   function pollParse(jobId) {
-    return new Promise((resolve, reject) => {
-      const interval = setInterval(async () => {
-        try {
-          const resp = await apiFetch(`/api/master-cv/parse/${jobId}/status`);
-          if (!resp.ok) throw new Error('Lost track of the parsing job.');
-          const s = await resp.json();
-          el_.parsingBar.style.width = `${s.percent}%`;
-          el_.parsingMessage.textContent = s.step;
-          if (s.done) {
-            clearInterval(interval);
-            if (s.error) reject(new Error(s.error));
-            else resolve();
-          }
-        } catch (err) {
-          clearInterval(interval);
-          reject(err);
-        }
-      }, 800);
+    return pollJob(`/api/master-cv/parse/${jobId}/status`, {
+      onProgress: (s) => {
+        el_.parsingBar.style.width = `${s.percent}%`;
+        el_.parsingMessage.textContent = s.step;
+      },
     });
   }
 

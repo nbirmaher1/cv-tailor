@@ -6,6 +6,7 @@ app.py's revision flow already established.
 """
 import json
 import shutil
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -31,14 +32,17 @@ MAX_PHOTO_BYTES = 5 * 1024 * 1024
 ALLOWED_CV_EXTENSIONS = {".pdf", ".docx"}
 ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 
-VENV_PY = PROJECT_ROOT / "venv" / "bin" / "python3"
-EXTRACT_SCRIPT = PROJECT_ROOT / "scripts" / "extract_docx.py"
+# .docx text extraction runs directly in this process (see the sys.path/import below)
+# rather than via a Claude Bash call -- --allowedTools scoping of Bash was verified
+# empirically to not be reliably enforced by the CLI, so Bash is dropped from Claude's
+# tool access entirely here (see app.py's matching note for the full context).
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+import extract_docx  # noqa: E402
 
-# No WebFetch (no job posting involved), no render scripts (this step only ever
-# produces content.json, never a rendered document), no WebSearch.
-MASTER_CV_PARSE_ALLOWED_TOOLS = (
-    f"Read Write Agent Bash({VENV_PY} {EXTRACT_SCRIPT} *)"
-)
+# No WebFetch (no job posting involved), no Bash (extraction happens server-side above;
+# this step never renders a document), no WebSearch.
+MASTER_CV_PARSE_ALLOWED_TOOLS = "Read Write Agent"
+DISALLOWED_TOOLS = "Bash"
 
 CLAUDE_TIMEOUT_SECONDS = 720
 
@@ -122,6 +126,7 @@ def _run_master_cv_parse(job_id: str, prompt: str, run_dir: Path, content_file: 
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--allowedTools", MASTER_CV_PARSE_ALLOWED_TOOLS,
+        "--disallowedTools", DISALLOWED_TOOLS,
         "--add-dir", str(run_dir),
     ]
 
@@ -203,10 +208,13 @@ async def upload_master_cv(
 
     content_file = run_dir / "content.json"
 
-    read_step = (
-        f"Read tool directly on {cv_path}" if cv_suffix == ".pdf"
-        else f"`{VENV_PY} {EXTRACT_SCRIPT} {cv_path}`"
-    )
+    if cv_suffix == ".pdf":
+        read_step = f"Read tool directly on {cv_path}"
+    else:
+        # Extracted here (not by Claude via Bash) -- see the sys.path/import note above.
+        extracted_text_path = run_dir / "cv.txt"
+        extracted_text_path.write_text(extract_docx.extract(str(cv_path)))
+        read_step = f"Read tool on {extracted_text_path} (already extracted from the original .docx)"
 
     prompt = f"""Parse this CV into the canonical JSON content record used throughout cv-tailor.
 This is a one-time save of the candidate's full "master" CV -- there is no job posting involved,

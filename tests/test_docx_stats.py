@@ -1,12 +1,35 @@
 import json
 
-from docx_stats import main, word_count
+from docx_stats import compute_stats, main, word_count
 
 
 def test_word_count_counts_whitespace_separated_tokens():
     assert word_count("Led a team of 5 engineers") == 6
     assert word_count("") == 0
     assert word_count(None) == 0
+
+
+def test_compute_stats_returns_expected_shape(tmp_path):
+    content = {
+        "experience": [{"bullets": ["Led a team of five", "Cut costs by 10%"]}],
+        "summary": "Data analyst with five years experience.",
+        "skills": [{"category": None, "items": ["SQL", "Python"]}],
+        "extra_sections": [{"heading": "Certifications", "items": ["AWS Certified"]}],
+    }
+    json_path = tmp_path / "content.json"
+    json_path.write_text(json.dumps(content))
+
+    stats = compute_stats(str(json_path))
+
+    assert stats == {
+        "experience_entries": 1,
+        "total_bullets": 2,
+        "summary_words": 6,
+        "bullet_words": 9,
+        "extra_words": 2,
+        "skills_words": 2,
+        "total_narrative_words": 17,
+    }
 
 
 def test_main_reports_expected_totals(tmp_path, capsys):

@@ -32,12 +32,29 @@ CREATE TABLE IF NOT EXISTS applications (
   company_slug TEXT NOT NULL,
   role_name TEXT NOT NULL,
   role_slug TEXT NOT NULL,
-  status TEXT,                          -- NULL, or 'applied' (moved to the Applications tab); more values
-                                         -- (interviewing/rejected/offer) reserved for future tracking
+  status TEXT,                          -- legacy; superseded by `stage` below, no longer written to.
+                                         -- kept (rather than dropped) since SQLite ALTER TABLE DROP
+                                         -- COLUMN support varies by version -- an unused column costs
+                                         -- nothing, a failed migration on someone's existing DB would.
+  stage TEXT NOT NULL DEFAULT 'tailored', -- 'tailored' | 'applied' | 'screening' | 'interviewing' |
+                                         -- 'offer' | 'archived'
+  archived_reason TEXT,                 -- 'rejected' | 'ghosted' | 'declined' | 'withdrawn';
+                                         -- only meaningful when stage='archived'
   applied_attempt_id INTEGER REFERENCES application_attempts(id) ON DELETE SET NULL,
-                                         -- which tailored CV was actually used to apply, when status='applied'
+                                         -- which tailored CV was actually used to apply, once stage
+                                         -- has reached 'applied' or beyond
   applied_at TEXT,                      -- when it was moved to the Applications tab; NULL until then
+  salary_min INTEGER,
+  salary_max INTEGER,
+  salary_currency TEXT DEFAULT 'USD',
+  location TEXT,
+  work_model TEXT,                      -- 'remote' | 'hybrid' | 'onsite'
+  job_url TEXT,
+  job_description_raw TEXT,             -- persisted verbatim at tailoring time; no AI involved
+  notes TEXT,
+  follow_up_due_date TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE(user_id, company_slug, role_slug)
 );
 CREATE INDEX IF NOT EXISTS idx_applications_user ON applications(user_id);
@@ -55,6 +72,18 @@ CREATE TABLE IF NOT EXISTS application_attempts (
   created_at TEXT NOT NULL              -- same timestamp used in the folder name
 );
 CREATE INDEX IF NOT EXISTS idx_attempts_application ON application_attempts(application_id);
+
+-- Auto-logged timeline for an application -- v1 only ever writes 'stage_change' entries
+-- (see db.update_application_stage), but activity_type is free text so future entry
+-- kinds (manual notes, follow-ups sent, ...) don't need a schema change.
+CREATE TABLE IF NOT EXISTS application_activities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+  activity_type TEXT NOT NULL,
+  description TEXT NOT NULL,
+  event_date TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activities_app ON application_activities(application_id);
 
 -- A run that finished successfully but couldn't be filed because company_name
 -- and/or role_name couldn't be determined. Not nested under applications/

@@ -11,7 +11,7 @@ def word_count(text):
     return len(re.findall(r"\S+", text or ""))
 
 
-def main(json_path):
+def compute_stats(json_path):
     data = json.loads(Path(json_path).read_text())
     bullets = [b for exp in data.get("experience", []) for b in exp.get("bullets", [])]
     bullet_words = sum(word_count(b) for b in bullets)
@@ -20,13 +20,26 @@ def main(json_path):
     extra_words = sum(word_count(item) for sec in data.get("extra_sections", []) for item in sec.get("items", []))
     total_narrative_words = summary_words + bullet_words + extra_words
 
-    print(f"experience entries: {len(data.get('experience', []))}")
-    print(f"total bullets: {len(bullets)}")
-    print(f"summary words: {summary_words}")
-    print(f"bullet words: {bullet_words}")
-    print(f"extra-section words: {extra_words}")
-    print(f"skills words (not counted toward narrative total): {skills_words}")
-    print(f"total narrative words (summary+bullets+extra): {total_narrative_words}")
+    return {
+        "experience_entries": len(data.get("experience", [])),
+        "total_bullets": len(bullets),
+        "summary_words": summary_words,
+        "bullet_words": bullet_words,
+        "extra_words": extra_words,
+        "skills_words": skills_words,
+        "total_narrative_words": total_narrative_words,
+    }
+
+
+def main(json_path):
+    stats = compute_stats(json_path)
+    print(f"experience entries: {stats['experience_entries']}")
+    print(f"total bullets: {stats['total_bullets']}")
+    print(f"summary words: {stats['summary_words']}")
+    print(f"bullet words: {stats['bullet_words']}")
+    print(f"extra-section words: {stats['extra_words']}")
+    print(f"skills words (not counted toward narrative total): {stats['skills_words']}")
+    print(f"total narrative words (summary+bullets+extra): {stats['total_narrative_words']}")
 
 
 if __name__ == "__main__":

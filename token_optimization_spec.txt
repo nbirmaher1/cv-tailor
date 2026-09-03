@@ -1,0 +1,435 @@
+================================================================================
+CV-TAILOR: TOKEN OPTIMIZATION & DETERMINISTIC PYTHON REPLACEMENT SPEC
+================================================================================
+Reviewer: External AI Code Reviewer (reviewed by two separate LLMs)
+Target Audience: Claude AI Agent (for planning and implementing changes)
+Project Root: /Users/nathanbirmaher/projects/cv-tailor
+Date: 2026-08-28
+Related: app_critique.txt (architecture critique in same directory)
+================================================================================
+
+PURPOSE
+-------
+This document specifies concrete changes to replace expensive, token-heavy LLM
+calls with deterministic Python functions — reducing per-run token consumption
+by an estimated 55-65% while maintaining or improving output quality.
+
+Current estimated token cost per tailoring run:  ~40,000 – 65,000 tokens
+Target estimated token cost after optimization:  ~15,000 – 24,000 tokens
+Estimated latency improvement:                   2-3 min → 40-60 seconds
+
+Each recommendation below includes:
+  - What the current code does and where
+  - Why it wastes tokens
+  - Exactly what Python code should replace it
+  - What to watch out for
+  - Priority and estimated savings
+
+Recommendations are ordered by implementation priority.
+
+
+================================================================================
+RECOMMENDATION 1: DETERMINISTIC CSS MICRO-FITTING
+              (Eliminate the 2nd `claude -p` Visual QA Loop)
+================================================================================
+Priority:    HIGHEST — biggest single savings, simplest to implement
+Savings:     ~10,000 – 15,000 tokens per run
+Latency:     Eliminates 30-60 seconds per run
+
+CURRENT BEHAVIOR (what to change):
+  File: app.py, lines 292-366 (_run_render_qa_loop)
+  File: app.py, lines 246-283 (_qa_prompt)
+  File: app.py, lines 286-289 (_classify_qa_event)
+
+  After the initial tailoring call produces content.json (and output.html for
+  PDF), the backend renders via Playwright, then spawns an entirely new
+  `claude -p` session with Read/Write tools to:
+    1. Read the rendered PDF
+    2. Check page count against target (1 or 2 pages)
+    3. If over budget, ask Claude to cut content from content.json
+    4. Re-render and possibly repeat (up to MAX_QA_ROUNDS=2 extra rounds)
+
+  This 2nd CLI session costs ~10,000-15,000 tokens just to do what is
+  essentially: "is page_count > target_pages? If yes, trim some bullets."
+
+WHAT TO BUILD INSTEAD:
+
+  Create a new file: scripts/layout_fitter.py
+
+  Step 1 — Detect overflow type:
+    After render_pdf.render() returns page_count, classify the result:
+      - FITS:       page_count == target_pages → done, no action needed
+      - MINOR_SPILL: page_count == target_pages + 1, but the extra page has
+                     very little content (detect by re-rendering with a
+                     slightly tighter CSS and checking if it drops to
+                     target_pages)
+      - MAJOR_SPILL: genuinely too much content for target_pages
+
+  Step 2 — CSS micro-adjustments for MINOR_SPILL (0 tokens):
+    Maintain a list of CSS tweaks to try in order, e.g.:
+      1. Reduce body padding from 26px to 22px
+      2. Reduce line-height from 1.15 to 1.10
+      3. Reduce h2 margin-top from 18px to 14px
+      4. Reduce li margin-bottom from 2px to 1px
+      5. Reduce font-size from 10.5pt to 10pt
+
+    For each tweak: modify the HTML string in memory, re-render with
+    Playwright, check page_count. Stop as soon as it fits. This takes
+    ~500ms per attempt and costs 0 tokens.
+
+    IMPORTANT: To do this, the HTML template filling must happen in Python
+    (see Recommendation 3 below), so that Python controls the HTML string
+    and can inject modified CSS before rendering.
+
+  Step 3 — Deterministic content cutting for MAJOR_SPILL (0 tokens OR micro-prompt):
+    If CSS adjustments alone can't fix it:
+      a) Load content.json
+      b) Identify the lowest-priority bullets using deterministic rules:
+         - Oldest job's last bullet
+         - Bullets without quantified metrics
+         - Bullets in roles with the most bullets (trim longest lists first)
+      c) Remove one bullet, re-render, check. Repeat if needed.
+      d) If the deterministic rules can't decide (rare), THEN fall back to a
+         tiny scoped prompt: send only the bullet list + "which 2 bullets
+         contribute least to [job title] relevance?" (~500 tokens)
+
+  Step 4 — Update summary.json:
+    If any cuts were made, append a note to the "changes" list in
+    summary.json (same as _append_cut_note currently does).
+
+WHAT TO REMOVE:
+  - Remove _run_render_qa_loop() or gut it to call layout_fitter instead
+  - Remove _qa_prompt(), _classify_qa_event()
+  - Remove QA_ALLOWED_TOOLS constant
+  - Remove the 2nd `claude -p` spawn for QA entirely
+
+
+================================================================================
+RECOMMENDATION 2: DIRECT UI EDITING FOR REVISIONS (0-TOKEN EDITS)
+================================================================================
+Priority:    HIGH — best UX improvement, massive per-revision savings
+Savings:     ~14,500 tokens per revision (from ~15,000 to ~0-500)
+Latency:     Instant for direct edits vs. 30-90 seconds currently
+
+CURRENT BEHAVIOR (what to change):
+  File: app.py, lines 834-928 (revise_tailor endpoint)
+  File: app.py, lines 1061-1140 (_run_revision, _run_revision_inner)
+
+  ANY revision — even "delete the 3rd bullet" or "change my phone number" —
+  spawns a full `claude -p` session with a long prompt containing the entire
+  content record, revision instructions, and Read/Write tools.
+
+WHAT TO BUILD INSTEAD:
+
+  Two-tier revision system:
+
+  Tier 1 — Direct JSON edits via API (0 tokens):
+    Add new endpoints in routes_applications.py or a new routes_revisions.py:
+
+    PATCH /api/tailor/{run_id}/content
+      Body: JSON patch operations on content.json, e.g.:
+        {"op": "remove", "path": "/experience/2/bullets/3"}
+        {"op": "replace", "path": "/experience/0/title", "value": "Senior Engineer"}
+        {"op": "replace", "path": "/summary", "value": "Updated summary text..."}
+
+    The backend:
+      1. Loads content.json from the run's directory
+      2. Applies the JSON patch
+      3. Re-fills the HTML template (Python, see Rec 3)
+      4. Re-renders PDF/DOCX via existing render scripts
+      5. Runs the layout fitter (Rec 1) if needed
+      6. Returns the updated result
+
+    The frontend needs:
+      - Edit buttons on each field/bullet in the success state preview
+      - A simple inline text editor (contenteditable or textarea overlay)
+      - Delete buttons on bullets and entries
+      - Drag handles or up/down arrows for reordering
+
+  Tier 2 — Scoped micro-prompts for natural language edits (~200-500 tokens):
+    Keep the existing /api/tailor/{run_id}/revise endpoint but make it smarter:
+
+    Instead of sending Claude the entire content record + full instructions,
+    determine WHAT the user is asking to change (a bullet, the summary, a
+    section) and send only that fragment + the feedback:
+
+      "The user's current bullet reads: '{bullet_text}'
+       They asked: '{feedback}'
+       Rewrite this single bullet. Return only the new bullet text."
+
+    Then Python patches content.json with the result and re-renders.
+
+  IMPORTANT: Both tiers should work on HISTORICAL applications too, not just
+  the current in-memory run. Load content.json from the attempt's folder_path
+  stored in the database. This also fixes the critique's finding that revisions
+  are impossible after navigating away.
+
+
+================================================================================
+RECOMMENDATION 3: PYTHON HTML TEMPLATE FILLING (STOP LLM WRITING HTML)
+================================================================================
+Priority:    HIGH — prerequisite for Recommendation 1, eliminates rendering bugs
+Savings:     ~1,000 – 2,000 output tokens per run
+Latency:     Eliminates occasional HTML syntax errors requiring re-runs
+
+CURRENT BEHAVIOR (what to change):
+  File: app.py, lines 664-699 (the prompt instructs Claude to fill output.html)
+  File: templates/default.html (the template with {{PLACEHOLDER}} markers)
+
+  The tailoring prompt tells Claude:
+    "For PDF output, also write the filled HTML to exactly {html_file}"
+  Claude reads the template, fills every placeholder, and writes the entire
+  HTML document as LLM output tokens. This is wasteful because:
+    1. The content already exists in content.json (which Claude also writes)
+    2. HTML template filling is a purely mechanical task
+    3. LLM output tokens are the slowest, most expensive token type
+    4. Claude occasionally introduces subtle HTML bugs (unclosed tags,
+       wrong escaping) that cause rendering glitches
+
+  NOTE: DOCX rendering is already 100% deterministic Python via
+  scripts/render_docx.py — this only affects the PDF path.
+
+WHAT TO BUILD INSTEAD:
+
+  Create a new file: scripts/fill_template.py (or add to an existing module)
+
+  Option A — Jinja2 (add jinja2 to requirements.txt):
+    Convert templates/default.html to use Jinja2 syntax:
+      {{ cv.full_name }}, {% for job in cv.experience %}, etc.
+    Python loads content.json, renders the template, writes output.html.
+
+  Option B — Simple Python string builder (no new dependency):
+    Write a function that takes content.json dict and programmatically
+    builds the HTML string, similar to how render_docx.py builds DOCX.
+    This gives you full control over conditional sections (photo/no-photo,
+    empty fields, etc.) without template syntax.
+
+  Either option:
+    - Handles the photo/no-photo conditional (drop the img tag if no photo)
+    - Drops empty contact spans (don't leave stray separators)
+    - Properly HTML-escapes all content
+    - Handles extra_sections dynamically
+
+  PROMPT CHANGES:
+    Remove from the tailoring prompt:
+      "For PDF output, also write the filled HTML to exactly {html_file}"
+    Claude should ONLY write content.json and summary.json.
+    The backend calls fill_template() after Claude finishes, before rendering.
+
+  ALSO UPDATE:
+    The revision flow (_run_revision_inner) currently tells Claude to
+    "refill {html_file} with the updated record" — remove this instruction
+    too. Python re-fills the template after any content.json change.
+
+
+================================================================================
+RECOMMENDATION 4: SERVER-SIDE JOB DESCRIPTION SCRAPING & CLEANING
+================================================================================
+Priority:    MEDIUM — moderate token savings, significant latency improvement
+Savings:     ~3,000 – 8,000 tokens per run
+Latency:     Saves 5-15 seconds (no WebFetch tool round-trip)
+
+CURRENT BEHAVIOR (what to change):
+  File: app.py, line 578
+  File: SKILL.md, step 2
+
+  The tailoring prompt includes either:
+    "Job posting URL: {job_url}" — Claude uses WebFetch to retrieve it
+    "Job description text:\n{job_text}" — used as-is if no URL
+
+  Problems:
+    1. WebFetch ingests significant boilerplate (nav bars, footers, related
+       job listings, company boilerplate) alongside the actual JD
+    2. If the URL is behind a login wall (LinkedIn, many ATS platforms),
+       Claude fails the entire run
+    3. If the user provides BOTH url AND pasted text as fallback, the pasted
+       text is silently discarded (see app_critique.txt, BUG 2)
+
+WHAT TO BUILD INSTEAD:
+
+  Create a new file: scripts/scrape_jd.py
+
+  def scrape_job_description(url: str) -> dict:
+      """
+      Returns {"title": str, "company": str, "text": str, "source": "scraped"|"failed"}
+      """
+
+  Implementation approach:
+    1. First try: requests/httpx GET with reasonable headers
+       Parse with trafilatura or BeautifulSoup, extract main content
+    2. If that returns too little text (<100 words): try Playwright
+       (you already have it installed) to render JS-heavy pages
+    3. If both fail: return {"source": "failed"} so the backend can
+       fall back to user-pasted text
+
+  PROMPT CHANGES:
+    Instead of "Job posting URL: {url}", pass:
+      "Job description:\n{cleaned_text}"
+    Remove WebFetch from TAILOR_FROM_MASTER_ALLOWED_TOOLS (line 92).
+    This also reduces the attack surface for prompt injection since
+    untrusted web content is now processed by Python, not fed raw to Claude.
+
+  ALSO FIX (from app_critique.txt BUG 2):
+    When BOTH url and pasted text are provided, include both in the prompt:
+      "Job description (scraped from URL):\n{scraped_text}\n\n
+       Candidate also provided this pasted version as reference:\n{pasted_text}"
+    If scraping failed, fall back to pasted text silently.
+
+  WATCH OUT FOR:
+    - LinkedIn, Greenhouse, Lever, and Workday are JavaScript-heavy SPAs.
+      trafilatura alone won't work on them. Playwright fallback is essential.
+    - Some sites serve different content to bot-like User-Agents.
+    - Rate limiting / IP blocking if used heavily.
+
+
+================================================================================
+RECOMMENDATION 5: MAKE THE REVIEW SUBAGENT LEANER (DO NOT ELIMINATE IT)
+================================================================================
+Priority:    MEDIUM — meaningful savings without sacrificing quality
+Savings:     ~5,000 – 10,000 tokens per run (40-50% of current review cost)
+Latency:     Saves 15-30 seconds
+
+IMPORTANT CONTEXT — WHY THE SUBAGENT MUST BE KEPT:
+  The independent review subagent (Agent tool, SKILL.md step 5) is the single
+  most important quality mechanism in cv-tailor. It exists because:
+
+    1. SELF-REVIEW BIAS: An LLM reviewing its own output in the same context
+       systematically fails to catch its own hallucinations. It "remembers"
+       what it intended and rationalizes errors.
+
+    2. CONTEXT CONTAMINATION: A separate Agent call gets a fresh context with
+       only the inputs + draft — no drafting chain-of-thought to anchor on.
+       This makes it genuinely more likely to catch scope inflation, metric
+       hallucination, and JD phrasing leakage.
+
+    3. THIS IS THE FEATURE THAT MAKES CV-TAILOR TRUSTWORTHY rather than
+       "just another AI resume inflator." Do not sacrifice it for tokens.
+
+  An earlier review recommended replacing the subagent with a "single-pass
+  Chain-of-Verification." This would degrade quality. DO NOT do this.
+
+WHAT TO DO INSTEAD — make the subagent cheaper:
+
+  Change 1 — Send only the delta, not the full CV:
+    Currently the subagent prompt includes: full original CV text + full JD +
+    full draft JSON + full cv-standards.md contents. Most of this is redundant.
+
+    Instead, construct a compact review payload:
+      For each experience entry in the tailored JSON, include:
+        - The ORIGINAL bullets from master CV content.json for that same role
+        - The REWRITTEN bullets in the tailored version
+        - The JD requirements each bullet claims to address
+
+    This lets the reviewer verify accuracy (original → rewritten mapping)
+    without re-reading the entire CV and JD.
+
+    Estimated reduction: ~60% fewer input tokens to the subagent.
+
+  Change 2 — Add deterministic pre-checks in Python (0 tokens):
+    Before calling the subagent, run Python verification:
+
+    def verify_no_hallucinated_facts(master_cv: dict, tailored_cv: dict) -> list:
+        """
+        Extract all numbers, dates, percentages, company names, and proper
+        nouns from master_cv. Flag any that appear in tailored_cv but NOT
+        in master_cv. Return list of suspicious additions.
+        """
+
+    This catches the easiest hallucinations (invented metrics, fabricated
+    dates) deterministically. Pass any flagged items to the subagent so it
+    can focus on the harder semantic checks.
+
+  Change 3 — Request structured output from the subagent:
+    Instead of free-text review reasoning, ask for compact JSON:
+      {"verdict": "pass"} or
+      {"verdict": "fix", "issues": [
+        {"bullet_index": 3, "role": "Data Engineer at Acme",
+         "issue": "overstates scope", "original": "...", "fix": "..."}
+      ]}
+
+    This reduces output tokens from the review and makes the fixes
+    machine-parseable so Python can apply them automatically.
+
+
+================================================================================
+RECOMMENDATION 6: PRE-FETCH COMPANY RESEARCH FOR COVER LETTERS
+================================================================================
+Priority:    LOW — only applies when "Intelligent cover letter" is checked
+Savings:     ~10,000 – 15,000 tokens per intelligent cover letter run
+Latency:     Saves 20-40 seconds
+
+CURRENT BEHAVIOR (what to change):
+  File: app.py, lines 621-640 (research_line block in the prompt)
+  Constant: TAILOR_FROM_MASTER_ALLOWED_TOOLS_WITH_WEB_SEARCH (line 97)
+
+  When "Intelligent cover letter" is checked, Claude gets WebSearch +
+  WebFetch tools and is told to research the company. Claude decides
+  what to search for, clicks through results, reads corporate pages,
+  and extracts signals. This is open-ended and token-expensive.
+
+WHAT TO BUILD INSTEAD:
+
+  Add to scripts/scrape_jd.py (or a new scripts/company_research.py):
+
+  def research_company(company_name: str) -> str:
+      """
+      Returns a cleaned text summary (max ~300 words) of the company's
+      mission, values, culture, and any notable recent public statements.
+      """
+      # 1. Search for "{company_name} mission values careers about"
+      #    using a search API or scraping search results
+      # 2. Fetch top 2-3 results (company's own About/Careers pages preferred)
+      # 3. Extract and clean relevant paragraphs
+      # 4. Return concatenated summary, max 300 words
+
+  PROMPT CHANGES:
+    Replace the open-ended research instructions with:
+      "Company research (pre-fetched):\n{research_summary}\n
+       Use 1-2 of these signals in the cover letter if genuinely relevant."
+
+    Remove WebSearch from the allowed tools for this run type.
+    This also prevents Claude from going on speculative search tangents.
+
+
+================================================================================
+IMPLEMENTATION ORDER & DEPENDENCY MAP
+================================================================================
+
+  Phase 1 (Prerequisites):
+    [Rec 3] Python HTML template filling ← needed before Rec 1 can work
+    [Rec 2] Direct UI editing endpoints  ← independent, can parallel
+
+  Phase 2 (Big Wins):
+    [Rec 1] CSS micro-fitting            ← depends on Rec 3
+    [Rec 5] Leaner subagent prompts      ← independent
+
+  Phase 3 (Polish):
+    [Rec 4] Server-side JD scraping      ← independent
+    [Rec 6] Pre-fetched company research ← independent, low priority
+
+  Dependency: Rec 1 depends on Rec 3 because the layout fitter needs to
+  modify CSS in the HTML string before re-rendering. If Claude is still
+  writing the HTML, Python can't inject CSS tweaks.
+
+
+================================================================================
+WHAT NOT TO CHANGE
+================================================================================
+
+  1. DO NOT eliminate the independent review subagent (Agent tool in step 5).
+     Make it leaner per Recommendation 5, but keep it as a separate context.
+
+  2. DO NOT remove the anti-hallucination gate. It is the core trust mechanism.
+
+  3. DO NOT change the content.json schema. It is the single source of truth
+     shared across PDF rendering, DOCX rendering, revisions, and the
+     Applications database. All optimizations work within this schema.
+
+  4. DO NOT remove deterministic rendering scripts (render_pdf.py,
+     render_docx.py, render_cover_letter_docx.py). They are already
+     the right architecture. Extend them, don't replace them.
+
+
+================================================================================
+END OF TOKEN OPTIMIZATION SPEC
+================================================================================

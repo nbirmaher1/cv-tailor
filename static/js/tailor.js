@@ -1,5 +1,13 @@
 const tailorEditMasterCvLink = document.getElementById('tailor-edit-master-cv-link');
 const tailorCvGate = document.getElementById('tailor-cv-gate');
+const tailorMain = document.getElementById('tailor-main');
+
+// The input form doesn't need extra room, but the rendered preview is cramped at the
+// form's width -- widen only while the success state (with its preview) is showing.
+function setTailorWide(isWide) {
+  tailorMain.classList.toggle('max-w-2xl', !isWide);
+  tailorMain.classList.toggle('max-w-5xl', isWide);
+}
 
 function refreshTailorGate() {
   const gated = window.hasMasterCV === false;
@@ -24,6 +32,8 @@ const restartBtn = document.getElementById('restart-btn');
 
 const rationaleCard = document.getElementById('rationale-card');
 const rationaleSummary = document.getElementById('rationale-summary');
+const rationaleRequirements = document.getElementById('rationale-requirements');
+const rationaleRequirementsChips = document.getElementById('rationale-requirements-chips');
 const rationaleChanges = document.getElementById('rationale-changes');
 const rationaleReview = document.getElementById('rationale-review');
 const rationaleReviewText = document.getElementById('rationale-review-text');
@@ -51,6 +61,7 @@ const coverLetterTemplateInput = document.getElementById('cover-letter-template-
 const coverLetterTemplateLabel = document.getElementById('cover-letter-template-label');
 
 const filedStatus = document.getElementById('filed-status');
+const filedApplyToggle = document.getElementById('filed-apply-toggle');
 const pendingFilingCard = document.getElementById('pending-card');
 const pendingCompanyInput = document.getElementById('pending-company-input');
 const pendingRoleInput = document.getElementById('pending-role-input');
@@ -154,6 +165,7 @@ form.addEventListener('submit', async (e) => {
   }
 
   form.classList.add('hidden');
+  setTailorWide(false);
   loadingState.classList.remove('hidden');
   loadingState.classList.add('flex');
   progressBar.style.width = '3%';
@@ -190,6 +202,7 @@ form.addEventListener('submit', async (e) => {
     loadingState.classList.remove('flex');
     successState.classList.remove('hidden');
     successState.classList.add('flex');
+    setTailorWide(true);
   } catch (err) {
     currentCancelToken = null;
     loadingState.classList.add('hidden');
@@ -331,7 +344,16 @@ downloadBtn.addEventListener('click', async () => {
   }
 });
 
+// Bumped on every renderPreview call so a slower-resolving fetch from a since-abandoned
+// call (e.g. the cover letter, if switched away from before it responds) can tell it's
+// stale and skip touching the DOM -- otherwise it can land after a newer, faster call
+// already set the correct preview and silently overwrite (and revoke the blob URL of)
+// whatever the user is actually looking at, even though the tab styling still shows the
+// right document selected.
+let previewRequestId = 0;
+
 async function renderPreview(runId, format, doc) {
+  const requestId = ++previewRequestId;
   previewWrap.classList.add('hidden');
   previewFallback.classList.add('hidden');
   previewFrame.classList.add('hidden');
@@ -349,12 +371,14 @@ async function renderPreview(runId, format, doc) {
     const resp = await apiFetch(previewUrlFor(doc));
     if (!resp.ok) throw new Error('Preview unavailable.');
     const blob = await resp.blob();
+    if (requestId !== previewRequestId) return;
     const oldSrc = previewFrame.src;
     previewFrame.src = URL.createObjectURL(blob);
     if (oldSrc) URL.revokeObjectURL(oldSrc);
     previewLoading.classList.add('hidden');
     previewFrame.classList.remove('hidden');
   } catch (_) {
+    if (requestId !== previewRequestId) return;
     previewWrap.classList.add('hidden');
     previewFallback.classList.remove('hidden');
   }
@@ -404,6 +428,7 @@ restartBtn.addEventListener('click', () => {
   successState.classList.add('hidden');
   successState.classList.remove('flex');
   form.classList.remove('hidden');
+  setTailorWide(false);
   form.reset();
   rationaleCard.classList.add('hidden');
   downloadError.classList.add('hidden');
@@ -439,8 +464,18 @@ restartBtn.addEventListener('click', () => {
 
 let currentPendingId = null;
 
+function renderApplyToggle(application) {
+  filedApplyToggle.innerHTML = '';
+  const btn = buildApplyToggleButton(application.application_id, application.attempt_id, application.is_applied, () => {
+    application.is_applied = !application.is_applied;
+    renderApplyToggle(application);
+  });
+  filedApplyToggle.appendChild(btn);
+}
+
 function renderApplicationStatus(application) {
   pendingFilingCard.classList.add('hidden');
+  filedApplyToggle.innerHTML = '';
   currentPendingId = null;
   pendingError.classList.add('hidden');
 
@@ -457,6 +492,7 @@ function renderApplicationStatus(application) {
     return;
   }
   filedStatus.textContent = `Saved to ${application.company_name} → ${application.role_name} — ${formatDate(application.created_at)}`;
+  renderApplyToggle(application);
 }
 
 pendingSaveBtn.addEventListener('click', async () => {
@@ -485,6 +521,30 @@ pendingSaveBtn.addEventListener('click', async () => {
   }
 });
 
+// Categorical (matched / listed-only / missing) coverage of the JD requirements the
+// review pass already maps every bullet against -- deliberately not a numeric "match
+// score": an invented single number invites false precision an LLM can't actually back
+// up run to run, where this is a direct readout of a real, checkable mapping.
+const REQUIREMENT_CHIP_STYLE = {
+  matched: { dot: '🟢', classes: 'text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40' },
+  listed_only: { dot: '🟡', classes: 'text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40' },
+  missing: { dot: '🔴', classes: 'text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40' },
+};
+
+function renderRequirementChips(requirements) {
+  rationaleRequirementsChips.innerHTML = '';
+  rationaleRequirements.classList.toggle('hidden', requirements.length === 0);
+  for (const req of requirements) {
+    const style = REQUIREMENT_CHIP_STYLE[req.status];
+    if (!style) continue;
+    const chip = document.createElement('span');
+    chip.className = `inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${style.classes}`;
+    chip.textContent = `${style.dot} ${req.name}`;
+    if (req.evidence) chip.title = req.evidence;
+    rationaleRequirementsChips.appendChild(chip);
+  }
+}
+
 function renderRationale(rationale) {
   if (!rationale || (!rationale.summary && !(rationale.changes || []).length)) {
     rationaleCard.classList.add('hidden');
@@ -492,6 +552,8 @@ function renderRationale(rationale) {
   }
   rationaleSummary.textContent = rationale.summary || '';
   rationaleSummary.classList.toggle('hidden', !rationale.summary);
+
+  renderRequirementChips(rationale.requirements || []);
 
   rationaleChanges.innerHTML = '';
   for (const change of (rationale.changes || [])) {
@@ -513,25 +575,11 @@ function renderRationale(rationale) {
 }
 
 function pollUntilDone(runId, cancelToken) {
-  return new Promise((resolve, reject) => {
-    cancelToken.reject = reject;
-    const interval = setInterval(async () => {
-      try {
-        const resp = await apiFetch(`/api/tailor/${runId}/status`);
-        if (!resp.ok) throw new Error('Lost track of the tailoring job.');
-        const s = await resp.json();
-        progressBar.style.width = `${s.percent}%`;
-        progressMessage.textContent = s.step;
-        if (s.done) {
-          clearInterval(interval);
-          if (s.error) reject(new Error(s.error));
-          else resolve(s);
-        }
-      } catch (err) {
-        clearInterval(interval);
-        reject(err);
-      }
-    }, 800);
-    cancelToken.interval = interval;
+  return pollJob(`/api/tailor/${runId}/status`, {
+    cancelToken,
+    onProgress: (s) => {
+      progressBar.style.width = `${s.percent}%`;
+      progressMessage.textContent = s.step;
+    },
   });
 }
