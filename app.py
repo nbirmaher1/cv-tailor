@@ -251,6 +251,55 @@ def _sanitize_filename(name: str) -> str:
     return name[:100] or "tailored_cv"
 
 
+def _filename_name_part(full_name: str) -> str:
+    """First + last name token (keeps long names short and recognizable), underscore-joined."""
+    tokens = re.findall(r"[A-Za-z0-9]+", full_name or "")
+    if not tokens:
+        return ""
+    picked = tokens if len(tokens) <= 2 else [tokens[0], tokens[-1]]
+    return "_".join(picked)
+
+
+def _filename_slug(s: str) -> str:
+    return "_".join(re.findall(r"[A-Za-z0-9]+", s or ""))
+
+
+def _filename_acronym(s: str) -> str:
+    return "".join(w[0] for w in re.findall(r"[A-Za-z0-9]+", s or "")).upper()
+
+
+def _build_default_filename(full_name: str, company: str, role: str, max_len: int = 72) -> str:
+    """The standard tailored-CV filename: [name]_[company]_[role]_cv. When that gets too long
+    to stay readable, progressively shorten -- acronym the role (usually longest), then the
+    company -- rather than truncating mid-word."""
+    name = _filename_name_part(full_name)
+    company_p = _filename_slug(company)
+    role_p = _filename_slug(role)
+    if not (name or company_p or role_p):
+        return "tailored_cv"
+
+    def assemble(c, r):
+        return "_".join(p for p in (name, c, r) if p) + "_cv"
+
+    base = assemble(company_p, role_p)
+    if len(base) <= max_len:
+        return _sanitize_filename(base)
+    role_short = _filename_acronym(role) if len(role_p) > 6 else role_p
+    base = assemble(company_p, role_short)
+    if len(base) <= max_len:
+        return _sanitize_filename(base)
+    company_short = _filename_acronym(company) if len(company_p) > 6 else company_p
+    return _sanitize_filename(assemble(company_short, role_short))
+
+
+def _master_full_name(user_id: int) -> str:
+    try:
+        data = json.loads((master_cv_dir(user_id) / "content.json").read_text())
+        return str(data.get("full_name") or "").strip()
+    except (json.JSONDecodeError, OSError):
+        return ""
+
+
 def _save_upload_with_limit(upload: UploadFile, dest: Path, max_bytes: int, label: str) -> None:
     size = 0
     with dest.open("wb") as f:
@@ -313,6 +362,7 @@ def _rehydrate_run(run_dir: Path, state: dict) -> dict:
         "output_file": p("output_file") or (run_dir / f"output.{fmt}"),
         "output_format": fmt,
         "download_name": state.get("download_name", "tailored_cv"),
+        "auto_filename": state.get("auto_filename", False),
         "rationale": None, "proc": None, "cancelled": False,
         "revising": False, "revision_count": 0,
         "cover_letter_file": p("cl_output_file"),
@@ -764,6 +814,13 @@ def _finalize_application_run(run_id: str) -> None:
         except (json.JSONDecodeError, OSError):
             pass
 
+    # Auto-name the download [name]_[company]_[role]_cv now that the company/role are resolved,
+    # unless the candidate typed their own filename.
+    if run.get("auto_filename"):
+        auto = _build_default_filename(_master_full_name(user_id), company_name, role_name)
+        if auto:
+            run["download_name"] = auto
+
     now = datetime.now(timezone.utc)
     attempt_base = now.strftime("%Y-%m-%d_%H-%M-%S")
     created_at = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -1008,6 +1065,9 @@ async def start_tailor(
     # actually requested -- meaningless on its own.
     wants_company_research = wants_cover_letter and intelligent_cover_letter.strip().lower() in ("true", "1", "on", "yes")
     cover_letter_notes = cover_letter_notes.strip()
+    # No explicit filename -> auto-name it [name]_[company]_[role]_cv once the company/role are
+    # known (at finalize). A placeholder stands in until then.
+    auto_filename = not filename.strip()
     download_name = _sanitize_filename(filename)
     overrides = _parse_field_overrides(field_overrides)
     if not job_url and not job_text:
@@ -1219,6 +1279,7 @@ explanation to {run_dir / 'error.txt'} instead, and stop."""
         "output_file": output_file,
         "output_format": output_format,
         "download_name": download_name,
+        "auto_filename": auto_filename,
         "rationale": None,
         "proc": None,
         "cancelled": False,
@@ -1258,7 +1319,7 @@ explanation to {run_dir / 'error.txt'} instead, and stop."""
     # have to rebuild it; it references absolute run-dir paths that stay valid.
     _persist_run_state(
         run_dir, run_id, user["id"], paths, prompt, run_allowed_tools,
-        job_url or None, job_text or None, wants_cover_letter, download_name,
+        job_url or None, job_text or None, wants_cover_letter, download_name, auto_filename,
     )
 
     thread = threading.Thread(
@@ -1270,7 +1331,7 @@ explanation to {run_dir / 'error.txt'} instead, and stop."""
 
 
 def _persist_run_state(run_dir, run_id, user_id, paths, prompt, allowed_tools,
-                       job_url, job_text, wants_cover_letter, download_name):
+                       job_url, job_text, wants_cover_letter, download_name, auto_filename=False):
     """Snapshots a run's identity + inputs + phase to runs/<id>/run_state.json. `paths`
     Path values are stored as bare filenames (rebuilt on load via
     run_state.paths_from_state) since the run folder itself is what moves/persists."""
@@ -1284,6 +1345,7 @@ def _persist_run_state(run_dir, run_id, user_id, paths, prompt, allowed_tools,
         "user_id": user_id,
         "output_format": paths["output_format"],
         "download_name": download_name,
+        "auto_filename": auto_filename,
         "job_url": job_url,
         "job_text": job_text,
         "wants_cover_letter": wants_cover_letter,

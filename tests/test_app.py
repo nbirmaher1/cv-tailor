@@ -1667,3 +1667,50 @@ def test_unfile_endpoint_409_when_not_filed(tmp_path):
     resp = client.post("/api/tailor/uf-2/unfile")
     assert resp.status_code == 409
     app_module.RUNS.pop("uf-2", None)
+
+
+# -- auto filename standard [name]_[company]_[role]_cv ----------------------------------
+
+def test_build_default_filename_basic():
+    assert app_module._build_default_filename("Nathan Birmaher", "Acme", "Analyst") == "Nathan_Birmaher_Acme_Analyst_cv"
+
+
+def test_build_default_filename_first_last_for_long_names():
+    out = app_module._build_default_filename("Ana Maria de la Cruz", "Acme", "Analyst")
+    assert out == "Ana_Cruz_Acme_Analyst_cv"
+
+
+def test_build_default_filename_shortens_long_role_to_acronym():
+    out = app_module._build_default_filename(
+        "Nathan Birmaher", "Acme",
+        "Senior Business Intelligence and Analytics Engineering Lead",
+    )
+    # Role acronymized to keep it readable; name + company stay intact.
+    assert out.startswith("Nathan_Birmaher_Acme_")
+    assert out.endswith("_cv")
+    assert len(out) <= 76
+    assert "SBIAAEL" in out
+
+
+def test_build_default_filename_empty_falls_back():
+    assert app_module._build_default_filename("", "", "") == "tailored_cv"
+
+
+def test_start_sets_auto_filename_flag_when_blank(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(app_module, "_run_claude", lambda *a, **kw: None)
+    resp = client.post("/api/tailor/start", data={"job_text": "Need an analyst.", "output_format": "pdf"})
+    assert resp.status_code == 200
+    run_id = resp.json()["run_id"]
+    assert app_module.RUNS[run_id]["auto_filename"] is True
+    app_module.RUNS.pop(run_id, None)
+
+
+def test_start_no_auto_filename_when_provided(monkeypatch):
+    monkeypatch.setattr(app_module, "_run_claude", lambda *a, **kw: None)
+    resp = client.post("/api/tailor/start", data={"job_text": "Need an analyst.", "output_format": "pdf", "filename": "MyCV"})
+    assert resp.status_code == 200
+    run_id = resp.json()["run_id"]
+    assert app_module.RUNS[run_id]["auto_filename"] is False
+    assert app_module.RUNS[run_id]["download_name"] == "MyCV"
+    app_module.RUNS.pop(run_id, None)
