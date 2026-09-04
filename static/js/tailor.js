@@ -31,8 +31,12 @@ const failureDiscardBtn = document.getElementById('failure-discard-btn');
 
 const runDrawer = document.getElementById('run-drawer');
 const runDrawerBackdrop = document.getElementById('run-drawer-backdrop');
+const runDrawerBody = document.getElementById('run-drawer-body');
 const runDrawerTitle = document.getElementById('run-drawer-title');
 const runDrawerClose = document.getElementById('run-drawer-close');
+const runDrawerExpand = document.getElementById('run-drawer-expand');
+const runDrawerExpandOut = document.getElementById('run-drawer-expand-out');
+const runDrawerExpandIn = document.getElementById('run-drawer-expand-in');
 const runDock = document.getElementById('run-dock');
 const runDockList = document.getElementById('run-dock-list');
 const runDockToggle = document.getElementById('run-dock-toggle');
@@ -279,9 +283,28 @@ function showToast(message, opts = {}) {
 
 function runLabel(r) {
   if (!r) return 'Tailoring run';
+  if (r.label) return r.label;  // job-search runs carry a label (titles + location)
   if (r.company || r.role) return `${r.company || 'Unknown company'}${r.role ? ' → ' + r.role : ''}`;
-  return 'Tailoring run';
+  return r.kind === 'search' ? 'Job search' : 'Tailoring run';
 }
+
+// The drawer opens as a right-side panel by default; the expand toggle grows it to fill the
+// page (content stays centered at a readable width so the preview gets bigger, not enormous).
+let drawerFull = false;
+function setDrawerFull(full) {
+  drawerFull = full;
+  runDrawer.classList.toggle('sm:max-w-2xl', !full);
+  runDrawer.classList.toggle('sm:max-w-none', full);
+  // In full-page mode, keep the body content centered and bounded so the CV preview scales up
+  // to a comfortable size rather than the full viewport width.
+  runDrawerBody.classList.toggle('sm:max-w-4xl', full);
+  runDrawerBody.classList.toggle('sm:mx-auto', full);
+  runDrawerBody.classList.toggle('w-full', full);
+  runDrawerExpandOut.classList.toggle('hidden', full);
+  runDrawerExpandIn.classList.toggle('hidden', !full);
+  runDrawerExpand.title = full ? 'Back to side panel' : 'Expand to full page';
+}
+runDrawerExpand.addEventListener('click', () => setDrawerFull(!drawerFull));
 
 function openDrawer() {
   runDrawerBackdrop.classList.remove('hidden');
@@ -356,6 +379,9 @@ function applyStatusToRun(runId, s) {
   if ('rationale' in s) r.rationale = s.rationale;
   if ('company_name' in s && s.company_name) r.company = s.company_name;
   if ('role_name' in s && s.role_name) r.role = s.role_name;
+  if ('kind' in s && s.kind) r.kind = s.kind;
+  if ('label' in s && s.label) r.label = s.label;
+  if ('results_count' in s && s.results_count != null) r.resultsCount = s.results_count;
 }
 
 function trackRun(runId) {
@@ -388,6 +414,26 @@ function onRunDone(runId, status, err) {
   if (!r || r.stopped) return;
   r.stopped = true;
   r.done = true;
+
+  // Job-search runs don't have a tailor result view -- they persist leads server-side. On
+  // completion, notify and let the Job Search screen (if present) refresh from job_leads.
+  if (r.kind === 'search') {
+    if (status && !err) {
+      r.error = null;
+      applyStatusToRun(runId, status);
+      const n = r.resultsCount;
+      const msg = n === 0 ? `${runLabel(r)} — no strong matches found`
+        : `Job search — ${n} match${n === 1 ? '' : 'es'} found`;
+      showToast(msg, { type: n ? 'success' : 'info', onClick: () => openRun(runId) });
+      if (window.onJobSearchDone) window.onJobSearchDone(runId);
+    } else {
+      r.error = (err && err.message) || 'Search failed.';
+      showToast(`${runLabel(r)} — search didn't finish`, { type: 'error', onClick: () => openRun(runId) });
+    }
+    renderDock();
+    return;
+  }
+
   if (status && !err) {
     applyStatusToRun(runId, status);
     r.error = null;
@@ -415,6 +461,15 @@ function onRunDone(runId, status, err) {
 async function openRun(runId) {
   const r = runs[runId];
   if (!r) return;
+  // A job-search run has no tailor drawer -- open the Job Search screen (its results/progress
+  // live there, backed by job_leads).
+  if (r.kind === 'search') {
+    r.seen = true;
+    showScreen('job-search');
+    if (window.loadJobSearchScreen) window.loadJobSearchScreen();
+    renderDock();
+    return;
+  }
   // The drawer lives on the tailor screen, so make sure it's the visible screen (the run may
   // have been opened from the dock while on another tab). showScreen fires screen:shown, which
   // closes any open drawer -- so set openRunId AFTER, then slide the drawer in.
@@ -427,6 +482,7 @@ async function openRun(runId) {
   activeDocument = 'cv';
   cachedDownloads = { cv: null, cover_letter: null };
   runDrawerTitle.textContent = runLabel(r);
+  setDrawerFull(false);  // each open defaults to the side panel; user can expand per-run
   openDrawer();
   // Immediate view from what we already know, then refresh with a full /status.
   if (!r.done) showLoading(r.step, r.percent);
@@ -620,11 +676,12 @@ async function rebuildRunsFromServer() {
     if (dismissed.has(s.run_id)) continue;
     if (runs[s.run_id]) { applyStatusToRun(s.run_id, s); continue; }
     runs[s.run_id] = {
-      runId: s.run_id, format: s.output_format || 'pdf', filename: s.download_name || '',
+      runId: s.run_id, kind: s.kind || 'tailor', label: s.label || null,
+      format: s.output_format || 'pdf', filename: s.download_name || '',
       company: s.company_name || null, role: s.role_name || null,
       done: s.done, error: s.error, errorCause: s.error_cause, resumable: s.resumable,
       queued: s.queued, percent: s.percent || 0, step: s.step || '',
-      application: s.application, hasCoverLetter: s.has_cover_letter,
+      application: s.application, hasCoverLetter: s.has_cover_letter, resultsCount: s.results_count,
       activeDocument: 'cv', seen: true, // rebuilt runs start "seen" (no retroactive toast)
     };
     if (!s.done) trackRun(s.run_id);

@@ -6,6 +6,7 @@ const userEmailEl = document.getElementById('user-email');
 const logoutBtn = document.getElementById('logout-btn');
 const navHomeBtn = document.getElementById('nav-home-btn');
 const navTailorBtn = document.getElementById('nav-tailor-btn');
+const navJobSearchBtn = document.getElementById('nav-jobsearch-btn');
 const navMasterCvBtn = document.getElementById('nav-master-cv-btn');
 const navApplicationsBtn = document.getElementById('nav-applications-btn');
 const navAppliedBtn = document.getElementById('nav-applied-btn');
@@ -28,6 +29,7 @@ function onLoggedIn(user) {
   logoutBtn.classList.remove('hidden');
   navHomeBtn.classList.remove('hidden');
   navTailorBtn.classList.remove('hidden');
+  navJobSearchBtn.classList.remove('hidden');
   navMasterCvBtn.classList.remove('hidden');
   navApplicationsBtn.classList.remove('hidden');
   navAppliedBtn.classList.remove('hidden');
@@ -51,6 +53,7 @@ function onLoggedOut() {
   logoutBtn.classList.add('hidden');
   navHomeBtn.classList.add('hidden');
   navTailorBtn.classList.add('hidden');
+  navJobSearchBtn.classList.add('hidden');
   navMasterCvBtn.classList.add('hidden');
   navApplicationsBtn.classList.add('hidden');
   navAppliedBtn.classList.add('hidden');
@@ -72,6 +75,10 @@ navHomeBtn.addEventListener('click', () => {
   if (window.loadHomeScreen) window.loadHomeScreen();
 });
 navTailorBtn.addEventListener('click', () => showScreen('app'));
+navJobSearchBtn.addEventListener('click', () => {
+  showScreen('job-search');
+  if (window.loadJobSearchScreen) window.loadJobSearchScreen();
+});
 navMasterCvBtn.addEventListener('click', () => {
   showScreen('master-cv');
   if (window.loadMasterCVScreen) window.loadMasterCVScreen();

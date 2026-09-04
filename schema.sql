@@ -102,3 +102,29 @@ CREATE TABLE IF NOT EXISTS pending_attempts (
   created_at TEXT NOT NULL              -- same timestamp as the folder's attempt_slug
 );
 CREATE INDEX IF NOT EXISTS idx_pending_user ON pending_attempts(user_id);
+
+-- Verified, CV-matched job openings found by the job-search helper. Persisted so the Job
+-- Search screen survives reloads and later searches de-dupe against what's already found
+-- (dedup_key = a normalized company|role|url fingerprint). The heavy detail (why_fits,
+-- requirements) is small JSON kept inline -- there are no files on disk for a lead.
+CREATE TABLE IF NOT EXISTS job_leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  dedup_key TEXT NOT NULL,              -- normalized fingerprint; UNIQUE per user (upsert on re-find)
+  company_name TEXT NOT NULL,
+  role_name TEXT NOT NULL,
+  location TEXT,
+  work_model TEXT,                      -- 'remote' | 'hybrid' | 'onsite' | ''
+  url TEXT NOT NULL,                    -- authoritative apply/posting URL (verified live)
+  source TEXT,                          -- greenhouse | lever | ashby | workday | ... | company-site
+  posted_date TEXT,
+  match_score INTEGER NOT NULL DEFAULT 0,  -- CV-fit score 0-100; list is sorted by this, highest first
+  match_level TEXT,                     -- 'strong' | 'possible' | 'stretch' | ''
+  why_fits TEXT,
+  requirements TEXT,                    -- JSON array of {name,status,evidence}
+  dismissed INTEGER NOT NULL DEFAULT 0,
+  tailored_run_id TEXT,                 -- set once the user tailors a CV for this lead
+  found_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(user_id, dedup_key)
+);
+CREATE INDEX IF NOT EXISTS idx_job_leads_user ON job_leads(user_id);

@@ -41,6 +41,7 @@ def init_db() -> None:
     with _conn() as conn:
         conn.executescript(SCHEMA_PATH.read_text())
     _migrate_applications_columns()
+    _migrate_job_leads_columns()
 
 
 # schema.sql's CREATE TABLE IF NOT EXISTS is a no-op against a database that
@@ -79,6 +80,21 @@ def _migrate_applications_columns() -> None:
         # stage-aware Applications view. Naturally idempotent -- a row already migrated
         # has stage != 'tailored' (its just-added default), so re-running is a no-op.
         conn.execute("UPDATE applications SET stage = 'applied' WHERE status = 'applied' AND stage = 'tailored'")
+
+
+# Add the fit-score columns to a job_leads table created before they existed.
+_JOB_LEADS_COLUMN_MIGRATIONS = [
+    ("match_score", "INTEGER NOT NULL DEFAULT 0"),
+    ("match_level", "TEXT"),
+]
+
+
+def _migrate_job_leads_columns() -> None:
+    with _conn() as conn:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(job_leads)")}
+        for name, ddl in _JOB_LEADS_COLUMN_MIGRATIONS:
+            if name not in columns:
+                conn.execute(f"ALTER TABLE job_leads ADD COLUMN {name} {ddl}")
 
 
 # -- users --------------------------------------------------------------------
@@ -448,3 +464,87 @@ def get_pending_attempt(pending_id: int, user_id: int) -> "sqlite3.Row | None":
 def delete_pending_attempt(pending_id: int) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM pending_attempts WHERE id = ?", (pending_id,))
+
+
+# -- job_leads (verified, CV-matched openings from the job-search helper) -----------------
+
+def upsert_job_lead(user_id: int, lead: dict) -> None:
+    """Insert a found opening, or refresh its detail if the same (user, dedup_key) is found
+    again -- without clobbering the user's own actions (dismissed / tailored_run_id are
+    preserved across a re-find)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO job_leads
+                 (user_id, dedup_key, company_name, role_name, location, work_model, url,
+                  source, posted_date, match_score, match_level, why_fits, requirements)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, dedup_key) DO UPDATE SET
+                 company_name = excluded.company_name,
+                 role_name    = excluded.role_name,
+                 location     = excluded.location,
+                 work_model   = excluded.work_model,
+                 url          = excluded.url,
+                 source       = excluded.source,
+                 posted_date  = excluded.posted_date,
+                 match_score  = excluded.match_score,
+                 match_level  = excluded.match_level,
+                 why_fits     = excluded.why_fits,
+                 requirements = excluded.requirements""",
+            (
+                user_id, lead["dedup_key"], lead["company_name"], lead["role_name"],
+                lead.get("location"), lead.get("work_model"), lead["url"], lead.get("source"),
+                lead.get("posted_date"), int(lead.get("match_score") or 0), lead.get("match_level"),
+                lead.get("why_fits"), json.dumps(lead.get("requirements") or []),
+            ),
+        )
+
+
+def list_job_leads(user_id: int, include_dismissed: bool = False) -> list:
+    """A user's found openings, best fit first (match_score desc), then newest. requirements is
+    parsed back into a list."""
+    with _conn() as conn:
+        query = "SELECT * FROM job_leads WHERE user_id = ?"
+        if not include_dismissed:
+            query += " AND dismissed = 0"
+        query += " ORDER BY match_score DESC, found_at DESC, id DESC"
+        rows = conn.execute(query, (user_id,)).fetchall()
+    out = []
+    for r in rows:
+        try:
+            requirements = json.loads(r["requirements"]) if r["requirements"] else []
+        except (json.JSONDecodeError, TypeError):
+            requirements = []
+        out.append({
+            "id": r["id"], "company_name": r["company_name"], "role_name": r["role_name"],
+            "location": r["location"], "work_model": r["work_model"], "url": r["url"],
+            "source": r["source"], "posted_date": r["posted_date"],
+            "match_score": r["match_score"], "match_level": r["match_level"],
+            "why_fits": r["why_fits"],
+            "requirements": requirements, "tailored_run_id": r["tailored_run_id"],
+            "found_at": r["found_at"],
+        })
+    return out
+
+
+def get_job_lead(lead_id: int, user_id: int) -> "sqlite3.Row | None":
+    with _conn() as conn:
+        return conn.execute(
+            "SELECT * FROM job_leads WHERE id = ? AND user_id = ?", (lead_id, user_id)
+        ).fetchone()
+
+
+def dismiss_job_lead(lead_id: int, user_id: int) -> bool:
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE job_leads SET dismissed = 1 WHERE id = ? AND user_id = ?", (lead_id, user_id)
+        )
+        return cur.rowcount > 0
+
+
+def mark_job_lead_tailored(lead_id: int, user_id: int, run_id: str) -> bool:
+    with _conn() as conn:
+        cur = conn.execute(
+            "UPDATE job_leads SET tailored_run_id = ? WHERE id = ? AND user_id = ?",
+            (run_id, lead_id, user_id),
+        )
+        return cur.rowcount > 0

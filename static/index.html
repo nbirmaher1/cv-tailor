@@ -47,6 +47,7 @@
       </span>
       <button id="nav-home-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Home</button>
       <button id="nav-tailor-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Tailor a CV</button>
+      <button id="nav-jobsearch-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Job Search</button>
       <button id="nav-applications-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Tailored CVs</button>
       <button id="nav-applied-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">Applications</button>
       <button id="nav-master-cv-btn" type="button" class="hidden text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white transition-colors">My CV</button>
@@ -135,6 +136,63 @@
     <div id="applied-filter-strip" class="hidden flex flex-wrap gap-1.5 mb-4"></div>
     <div id="applied-empty" class="hidden text-sm text-zinc-400 text-center py-10">Nothing here yet — head to "Tailored CVs" and move one over once you've applied.</div>
     <div id="applied-table-wrap" class="overflow-x-auto"></div>
+  </main>
+
+  <!-- JOB SEARCH SCREEN -->
+  <main data-screen="job-search" class="hidden max-w-3xl mx-auto px-6 pt-8 pb-20">
+    <h1 class="text-2xl font-bold text-zinc-900 dark:text-white mb-2">Job search</h1>
+    <p class="text-sm text-zinc-400 mb-6">Find real, currently-open roles you're a strong match for, based on your CV. Every result is verified live against the company's own careers page — no dead links, no made-up jobs.</p>
+
+    <div class="bg-white dark:bg-zinc-900 rounded-2xl shadow-soft ring-1 ring-zinc-900/5 dark:ring-white/10 p-6 sm:p-8 mb-8">
+      <form id="jobsearch-form" class="space-y-5">
+        <div>
+          <label class="block text-sm font-semibold text-zinc-900 dark:text-white mb-1">Location <span class="text-red-500">*</span></label>
+          <p class="text-xs text-zinc-400 mb-2">City, region, or "remote".</p>
+          <input type="text" id="js-location" placeholder="e.g. Amsterdam, Netherlands"
+                 class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-3 text-sm placeholder:text-zinc-400 transition-all focus-ring">
+        </div>
+
+        <details class="group rounded-xl border border-zinc-100 dark:border-zinc-800 overflow-hidden">
+          <summary class="flex items-center justify-between cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+            <span>Narrow the search (optional)</span>
+            <svg class="w-4 h-4 text-zinc-400 transition-transform duration-200 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg>
+          </summary>
+          <div class="px-4 pb-5 pt-1 space-y-4 border-t border-zinc-100 dark:border-zinc-800">
+            <div>
+              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mt-4 mb-2">Target titles</label>
+              <input type="text" id="js-titles" placeholder="e.g. Data Analyst, Product Analyst — leave blank to derive from your CV"
+                     class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm placeholder:text-zinc-400 focus-ring">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Specific companies</label>
+              <input type="text" id="js-companies" placeholder="e.g. Adyen, Booking.com — we'll check their own boards directly"
+                     class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm placeholder:text-zinc-400 focus-ring">
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-2">Extra sites to include</label>
+              <input type="text" id="js-sites" placeholder="e.g. a company careers URL or niche job board (optional)"
+                     class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-2.5 text-sm placeholder:text-zinc-400 focus-ring">
+              <p class="text-xs text-zinc-400 mt-2">By default we search company ATS boards (Greenhouse, Lever, Ashby, Workday…) plus LinkedIn/Indeed/Glassdoor for discovery, then verify each hit on the company's own board.</p>
+            </div>
+          </div>
+        </details>
+
+        <button type="submit" id="js-submit-btn"
+                class="w-full flex items-center justify-center gap-2 rounded-xl bg-accent hover:bg-accent-hover disabled:bg-zinc-300 dark:disabled:bg-zinc-700 disabled:cursor-not-allowed text-white font-semibold text-sm py-3.5 transition-all duration-200 shadow-sm hover:shadow-md active:scale-[0.99]">
+          <span>Search for matching jobs</span>
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
+        </button>
+        <div id="js-form-error" class="hidden rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-100 dark:border-red-900 px-4 py-3 text-sm text-red-600 dark:text-red-400"></div>
+        <p id="js-running-note" class="hidden text-xs text-zinc-400 text-center">Searching in the background — you can keep working; watch progress in the dock (bottom-right), and results will appear below when it's done.</p>
+      </form>
+    </div>
+
+    <div id="js-results-header" class="hidden flex items-center justify-between mb-3">
+      <h2 class="text-sm font-semibold text-zinc-900 dark:text-white">Matches found</h2>
+      <span id="js-results-count" class="text-xs text-zinc-400"></span>
+    </div>
+    <div id="js-empty" class="hidden text-sm text-zinc-400 text-center py-10">No matches yet — run a search above.</div>
+    <div id="js-results-list" class="space-y-3"></div>
   </main>
 
   <!-- MASTER CV SCREEN -->
@@ -522,9 +580,15 @@
       <aside id="run-drawer" class="fixed inset-y-0 right-0 z-50 w-full sm:max-w-2xl translate-x-full transition-transform duration-300 ease-out bg-white dark:bg-zinc-900 shadow-2xl ring-1 ring-zinc-900/5 dark:ring-white/10 flex flex-col">
         <div class="flex items-center justify-between gap-3 px-6 py-4 border-b border-zinc-100 dark:border-zinc-800 shrink-0">
           <p id="run-drawer-title" class="text-sm font-semibold text-zinc-900 dark:text-white truncate">Tailoring run</p>
-          <button type="button" id="run-drawer-close" class="shrink-0 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors" aria-label="Close">
-            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
-          </button>
+          <div class="flex items-center gap-1 shrink-0">
+            <button type="button" id="run-drawer-expand" class="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors" aria-label="Expand to full page" title="Expand to full page">
+              <svg id="run-drawer-expand-out" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9M3.75 20.25h4.5m-4.5 0v-4.5m0 4.5L9 15m11.25 5.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+              <svg id="run-drawer-expand-in" class="w-5 h-5 hidden" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9 3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5 5.25 5.25" /></svg>
+            </button>
+            <button type="button" id="run-drawer-close" class="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors" aria-label="Close">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
         </div>
         <div id="run-drawer-body" class="flex-1 overflow-y-auto px-6 py-6">
 
@@ -663,6 +727,7 @@
 
 <script src="/static/js/common.js"></script>
 <script src="/static/js/tailor.js"></script>
+<script src="/static/js/job-search.js"></script>
 <script src="/static/js/master-cv.js"></script>
 <script src="/static/js/applications.js"></script>
 <script src="/static/js/home.js"></script>

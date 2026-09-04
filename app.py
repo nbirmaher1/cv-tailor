@@ -165,6 +165,28 @@ QA_ALLOWED_TOOLS = "Read Write"
 # undiscoverable, not just unlisted). Never remove this without re-verifying that finding.
 DISALLOWED_TOOLS = "Bash"
 
+# The job-search helper needs the web tools (discovery + authoritative verification) plus the
+# review subagent; still no Bash. See .claude/skills/job-search/.
+JOB_SEARCH_ALLOWED_TOOLS = "Read Write WebSearch WebFetch Agent"
+
+# Default source tiers for the job search (mirrors job-search-standards.md). Tier A = company
+# ATS boards (public, fetchable, authoritative -> verification happens here). Tier B =
+# aggregators (discovery only; a hit here must be confirmed on a Tier-A source or dropped).
+JOB_SEARCH_ATS_DOMAINS = [
+    "boards.greenhouse.io", "boards-api.greenhouse.io",
+    "jobs.lever.co", "api.lever.co",
+    "jobs.ashbyhq.com",
+    "myworkdayjobs.com",
+    "careers.smartrecruiters.com", "jobs.smartrecruiters.com",
+    "apply.workable.com",
+    "recruitee.com",
+    "jobs.personio.com", "jobs.personio.de",
+]
+JOB_SEARCH_AGGREGATOR_DOMAINS = ["linkedin.com", "indeed.com", "glassdoor.com"]
+# Wide, cheap discovery -> verify only a shortlist to keep tokens bounded (see the skill).
+JOB_SEARCH_VERIFY_CAP = 25
+MAX_JOB_SEARCH_LIST_CHARS = 2_000
+
 CLAUDE_TIMEOUT_SECONDS = 720
 
 # SKILL.md step 8's cut-and-recheck cap: the initial post-render QA check, plus up to this
@@ -1382,6 +1404,8 @@ def tailor_status(run_id: str, user=Depends(auth.get_current_user)):
         "max_revisions": MAX_REVISIONS,
         "has_cover_letter": run.get("cover_letter_file") is not None and run["cover_letter_file"].exists(),
         "application": run.get("application"),
+        "kind": run.get("kind", "tailor"),
+        "results_count": run.get("results_count"),
     }
 
 
@@ -1672,6 +1696,8 @@ def _run_summary(run_id: str, run: dict) -> dict:
     cover_letter_file = run.get("cover_letter_file")
     return {
         "run_id": run_id,
+        "kind": run.get("kind", "tailor"),   # "tailor" | "search"
+        "label": run.get("label"),           # dock label for a search run (no company/role)
         "company_name": company,
         "role_name": role,
         "step": run.get("step"),
@@ -1685,6 +1711,7 @@ def _run_summary(run_id: str, run: dict) -> dict:
         "download_name": run.get("download_name"),
         "has_cover_letter": cover_letter_file is not None and getattr(cover_letter_file, "exists", lambda: False)(),
         "application": run.get("application"),
+        "results_count": run.get("results_count"),
     }
 
 
@@ -1709,6 +1736,246 @@ def list_resumable(user=Depends(auth.get_current_user)):
         for run_id, run in list(RUNS.items())
         if run.get("user_id") == user["id"] and run.get("resumable")
     ]}
+
+
+# -- Job search (a background "search" run type; results persisted to job_leads) ----------
+
+def _job_dedup_key(company: str, role: str, url: str) -> str:
+    """Normalized fingerprint so the same opening found again (or across searches) upserts
+    rather than duplicating. URL usually pins it; company+role guards near-identical reposts."""
+    norm = lambda s: re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+    return f"{norm(company)}|{norm(role)}|{norm(url)}"
+
+
+def _read_job_results(results_file: Path) -> list:
+    """Parse + validate the job-search skill's results.json into clean lead dicts. Anything
+    malformed or missing a company/role/url is dropped -- the zero-false-results bar means we'd
+    rather show fewer than surface a broken row."""
+    try:
+        data = json.loads(results_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    jobs = data.get("jobs") if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return []
+    out = []
+    for j in jobs:
+        if not isinstance(j, dict):
+            continue
+        company = str(j.get("company", "")).strip()
+        role = str(j.get("role", "")).strip()
+        url = str(j.get("url", "")).strip()
+        if not (company and role and url):
+            continue
+        requirements = []
+        for r in j.get("requirements", []):
+            if not isinstance(r, dict):
+                continue
+            name = str(r.get("name", "")).strip()
+            status = r.get("status")
+            if not name or status not in ("matched", "listed_only", "missing"):
+                continue
+            requirements.append({"name": name, "status": status, "evidence": str(r.get("evidence", "")).strip()})
+        # Fit score (0-100) and level drive the descending sort below. Tolerate a missing/garbage
+        # score (default 0) and a level outside the vocabulary (default '') rather than dropping.
+        try:
+            match_score = int(round(float(j.get("match_score"))))
+        except (TypeError, ValueError):
+            match_score = 0
+        match_score = max(0, min(100, match_score))
+        match_level = j.get("match_level")
+        if match_level not in ("strong", "possible", "stretch"):
+            match_level = ""
+        out.append({
+            "dedup_key": _job_dedup_key(company, role, url),
+            "company_name": company, "role_name": role,
+            "location": str(j.get("location", "")).strip(),
+            "work_model": str(j.get("work_model", "")).strip(),
+            "url": url, "source": str(j.get("source", "")).strip(),
+            "posted_date": str(j.get("posted_date", "")).strip(),
+            "match_score": match_score, "match_level": match_level,
+            "why_fits": str(j.get("why_fits", "")).strip(),
+            "requirements": requirements,
+        })
+    # Best fits first, so the list leads with the strongest matches.
+    out.sort(key=lambda x: x["match_score"], reverse=True)
+    return out
+
+
+def _classify_job_search_event(tool_name: str, counts: dict) -> Optional[tuple[str, int]]:
+    if tool_name == "Read" and counts["Read"] == 1:
+        return ("Reading your CV…", 10)
+    if tool_name == "WebSearch":
+        return ("Searching for openings…", 35)
+    if tool_name == "WebFetch":
+        return ("Verifying real, live postings…", 65)
+    if tool_name == "Agent":
+        return ("Double-checking every result…", 85)
+    return None
+
+
+def _run_job_search(run_id: str, prompt: str, run_dir: Path, results_file: Path):
+    """Background job-search orchestration: one Claude call (WebSearch/WebFetch/Agent, no Bash)
+    following the job-search skill, which writes verified strong matches to results.json. On
+    success the results are upserted into job_leads (persisted, deduped) and the run is marked
+    done. Search runs aren't resumable -- re-running is cheap and idempotent."""
+    cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--permission-mode", "bypassPermissions",
+        "--allowedTools", JOB_SEARCH_ALLOWED_TOOLS,
+        "--disallowedTools", DISALLOWED_TOOLS,
+        "--add-dir", str(run_dir),
+    ]
+    counts = {"Read": 0, "WebSearch": 0, "WebFetch": 0, "Agent": 0}
+
+    def on_event(block):
+        if block.get("type") != "tool_use":
+            return
+        name = block.get("name")
+        if name in counts:
+            counts[name] += 1
+        classification = _classify_job_search_event(name, counts)
+        if classification:
+            step, percent = classification
+            if percent > RUNS[run_id]["percent"]:
+                RUNS[run_id].update(step=step, percent=percent)
+
+    ok, tail_output = claude_runner.run_single_call(
+        run_id, cmd, PROJECT_ROOT, run_dir, on_event, RUNS,
+        timeout_seconds=CLAUDE_TIMEOUT_SECONDS, fail_messages=FUNNY_ERROR_MESSAGES,
+    )
+    if not ok:
+        return
+
+    try:
+        if not results_file.exists():
+            error_file = run_dir / "error.txt"
+            if error_file.exists():
+                RUNS[run_id].update(done=True, error=error_file.read_text())
+            else:
+                print(f"[cv-tailor] job search {run_id} produced no results file:\n{tail_output}", file=sys.stderr)
+                RUNS[run_id].update(done=True, error=random.choice(FUNNY_ERROR_MESSAGES))
+            return
+
+        leads = _read_job_results(results_file)
+        user_id = RUNS[run_id]["user_id"]
+        for lead in leads:
+            try:
+                db.upsert_job_lead(user_id, lead)
+            except Exception:
+                print(f"[cv-tailor] job search {run_id}: failed to save a lead:\n{traceback.format_exc()}", file=sys.stderr)
+        RUNS[run_id].update(step="Done!", percent=100, done=True, error=None, results_count=len(leads))
+    except Exception:
+        _fail_run(run_id, "during job-search finalize", resumable=False)
+
+
+@app.post("/api/job-search/start")
+async def start_job_search(
+    location: str = Form(...),
+    titles: str = Form(default=""),
+    companies: str = Form(default=""),
+    sites: str = Form(default=""),
+    user=Depends(auth.require_master_cv),
+):
+    location = location.strip()
+    titles = titles.strip()
+    companies = companies.strip()
+    sites = sites.strip()
+    if not location:
+        raise HTTPException(400, "A target location is required to search.")
+    for label, value in (("Titles", titles), ("Companies", companies), ("Sites", sites)):
+        if len(value) > MAX_JOB_SEARCH_LIST_CHARS:
+            raise HTTPException(400, f"{label} is too long (max {MAX_JOB_SEARCH_LIST_CHARS:,} characters).")
+
+    _sweep_stale_runs()
+
+    run_id = uuid.uuid4().hex
+    run_dir = RUNS_DIR / run_id
+    run_dir.mkdir(parents=True)
+
+    master_content_file = master_cv_dir(user["id"]) / "content.json"
+    results_file = run_dir / "results.json"
+    error_file = run_dir / "error.txt"
+
+    titles_line = f"Target titles the candidate specified: {titles}" if titles else \
+        "The candidate did not specify titles -- derive realistic target titles from the CV."
+    companies_line = f"Target companies to prioritize: {companies}" if companies else ""
+    sites_line = f"Also include these sites in discovery: {sites}" if sites else ""
+
+    prompt = f"""Use the job-search skill's process to find real, currently-open job openings this
+candidate has a plausible interview shot at -- strong AND partial matches, not only perfect fits.
+Apply job-search-standards.md in full -- the zero-false-results verification protocol is mandatory; a
+returned job that isn't a real, live posting is a failure.
+
+Master CV content record (already parsed -- read this directly, do NOT re-parse a raw CV):
+{master_content_file}
+Target location: {location}
+{titles_line}
+{companies_line}
+{sites_line}
+
+Default discovery sources: company ATS boards ({', '.join(JOB_SEARCH_ATS_DOMAINS)}) for both
+discovery and authoritative verification, plus the aggregators ({', '.join(JOB_SEARCH_AGGREGATOR_DOMAINS)})
+for discovery only (an aggregator hit must be confirmed on a company's own ATS/careers source or
+dropped). Cast a WIDE net with WebSearch, but WebFetch-verify only the ~{JOB_SEARCH_VERIFY_CAP} most
+promising candidates to keep token use low.
+
+Score each verified job's CV fit (match_score 0-100, match_level strong/possible/stretch) per
+job-search-standards.md, keep everything scoring >= 35 (partial matches included), and sort the list
+by match_score, highest first. Write it as JSON to exactly {results_file}, matching
+job-search-standards.md's result schema (each object includes match_score, match_level, why_fits),
+as: {{"jobs": [ ...each job object... ], "searched": {{"titles": [...], "location": "{location}",
+"candidates_found": N, "verified": M}}}}. Include the honest counts; if nothing survives
+verification, write {{"jobs": [], "searched": {{...}}}} rather than lowering the reality bar.
+
+If you cannot proceed, write a short explanation to {error_file} instead, and stop."""
+
+    label_titles = titles or "matching roles"
+    RUNS[run_id] = {
+        "kind": "search",
+        "label": f"{label_titles} in {location}",
+        "step": "Starting…",
+        "percent": 3,
+        "done": False,
+        "error": None,
+        "error_cause": None,
+        "resumable": False,
+        "queued": False,
+        "user_id": user["id"],
+        "run_dir": run_dir,
+        "results_count": None,
+        # Fields the shared status/summary readers touch -- search runs have no CV output.
+        "output_format": None,
+        "download_name": None,
+        "cover_letter_file": None,
+        "rationale": None,
+        "revision_count": 0,
+        "application": None,
+        "proc": None,
+        "cancelled": False,
+        "revising": False,
+        "metadata_file": None,
+    }
+
+    thread = threading.Thread(
+        target=_run_job_search, args=(run_id, prompt, run_dir, results_file), daemon=True
+    )
+    thread.start()
+    return {"run_id": run_id}
+
+
+@app.get("/api/job-leads")
+def list_job_leads_endpoint(user=Depends(auth.get_current_user)):
+    return {"leads": db.list_job_leads(user["id"])}
+
+
+@app.post("/api/job-leads/{lead_id}/dismiss")
+def dismiss_job_lead_endpoint(lead_id: int, user=Depends(auth.get_current_user)):
+    if not db.dismiss_job_lead(lead_id, user["id"]):
+        raise HTTPException(404, "Lead not found.")
+    return {"dismissed": True}
 
 
 # Ordered so later matches only apply once earlier ones have already been seen once each,

@@ -1714,3 +1714,119 @@ def test_start_no_auto_filename_when_provided(monkeypatch):
     assert app_module.RUNS[run_id]["auto_filename"] is False
     assert app_module.RUNS[run_id]["download_name"] == "MyCV"
     app_module.RUNS.pop(run_id, None)
+
+
+# -- job search: results parsing, job_leads DB, endpoints -------------------------------
+
+def test_job_dedup_key_normalizes():
+    a = app_module._job_dedup_key("Acme Inc.", "Data Analyst", "https://boards.greenhouse.io/acme/jobs/1")
+    b = app_module._job_dedup_key("acme inc", "data  analyst", "https://boards.greenhouse.io/acme/jobs/1")
+    assert a == b
+
+
+def test_read_job_results_parses_and_drops_bad_rows(tmp_path):
+    rf = tmp_path / "results.json"
+    rf.write_text(json.dumps({"jobs": [
+        {"company": "Acme", "role": "Data Analyst", "url": "https://x/1", "source": "greenhouse",
+         "location": "Amsterdam", "why_fits": "Strong SQL match",
+         "requirements": [{"name": "SQL", "status": "matched", "evidence": "Built SQL pipelines"},
+                          {"name": "Bad", "status": "nonsense"}]},
+        {"company": "", "role": "Missing company", "url": "https://x/2"},   # dropped: no company
+        {"role": "No url", "company": "X"},                                 # dropped: no url
+        "not a dict",                                                       # dropped
+    ]}))
+    out = app_module._read_job_results(rf)
+    assert len(out) == 1
+    assert out[0]["company_name"] == "Acme"
+    assert [r["name"] for r in out[0]["requirements"]] == ["SQL"]  # bad-status requirement dropped
+    assert out[0]["dedup_key"]
+
+
+def test_read_job_results_missing_file_returns_empty(tmp_path):
+    assert app_module._read_job_results(tmp_path / "nope.json") == []
+
+
+def test_read_job_results_scores_clamped_and_sorted_desc(tmp_path):
+    rf = tmp_path / "results.json"
+    rf.write_text(json.dumps({"jobs": [
+        {"company": "Low", "role": "R", "url": "https://x/low", "match_score": 40, "match_level": "possible"},
+        {"company": "High", "role": "R", "url": "https://x/high", "match_score": 95, "match_level": "strong"},
+        {"company": "Over", "role": "R", "url": "https://x/over", "match_score": 250, "match_level": "bogus"},  # clamped to 100, level dropped
+        {"company": "Bad", "role": "R", "url": "https://x/bad", "match_score": "n/a"},  # unparseable -> 0
+    ]}))
+    out = app_module._read_job_results(rf)
+    assert [o["company_name"] for o in out] == ["Over", "High", "Low", "Bad"]  # descending by score
+    assert out[0]["match_score"] == 100 and out[0]["match_level"] == ""  # clamped, invalid level cleared
+    assert out[-1]["match_score"] == 0  # unparseable defaults to 0
+
+
+def test_job_leads_ordered_by_match_score_desc():
+    import db as db_mod
+    db_mod.upsert_job_lead(CURRENT_USER_ID, {"dedup_key": "s-lo", "company_name": "Lo", "role_name": "R",
+                                             "url": "https://x/lo", "match_score": 42, "match_level": "possible"})
+    db_mod.upsert_job_lead(CURRENT_USER_ID, {"dedup_key": "s-hi", "company_name": "Hi", "role_name": "R",
+                                             "url": "https://x/hi", "match_score": 88, "match_level": "strong"})
+    leads = db_mod.list_job_leads(CURRENT_USER_ID)
+    assert [l["company_name"] for l in leads] == ["Hi", "Lo"]
+    assert leads[0]["match_score"] == 88 and leads[0]["match_level"] == "strong"
+
+
+def test_job_leads_upsert_dedupes_and_preserves_dismissal():
+    import db as db_mod
+    lead = {"dedup_key": "k1", "company_name": "Acme", "role_name": "Analyst", "url": "https://x/1",
+            "location": "Amsterdam", "source": "greenhouse", "why_fits": "fit", "requirements": [{"name": "SQL", "status": "matched"}]}
+    db_mod.upsert_job_lead(CURRENT_USER_ID, lead)
+    db_mod.upsert_job_lead(CURRENT_USER_ID, {**lead, "why_fits": "updated fit"})  # same key -> update
+
+    leads = db_mod.list_job_leads(CURRENT_USER_ID)
+    assert len(leads) == 1
+    assert leads[0]["why_fits"] == "updated fit"
+    assert leads[0]["requirements"][0]["name"] == "SQL"
+
+    # Dismiss, then re-find (upsert) -> stays dismissed (user action preserved).
+    assert db_mod.dismiss_job_lead(leads[0]["id"], CURRENT_USER_ID) is True
+    assert db_mod.list_job_leads(CURRENT_USER_ID) == []
+    db_mod.upsert_job_lead(CURRENT_USER_ID, {**lead, "why_fits": "found again"})
+    assert db_mod.list_job_leads(CURRENT_USER_ID) == []  # still dismissed
+
+
+def test_job_leads_scoped_to_user():
+    import db as db_mod
+    db_mod.upsert_job_lead(CURRENT_USER_ID, {"dedup_key": "k2", "company_name": "A", "role_name": "R", "url": "https://x/2"})
+    assert len(db_mod.list_job_leads(CURRENT_USER_ID)) == 1
+    assert db_mod.list_job_leads(CURRENT_USER_ID + 999) == []
+
+
+def test_start_job_search_requires_location():
+    resp = client.post("/api/job-search/start", data={"titles": "Data Analyst"})
+    assert resp.status_code == 422  # missing required Form field
+
+
+def test_start_job_search_creates_search_run(monkeypatch):
+    monkeypatch.setattr(app_module, "_run_job_search", lambda *a, **kw: None)
+    resp = client.post("/api/job-search/start", data={"location": "Amsterdam", "titles": "Data Analyst"})
+    assert resp.status_code == 200
+    run_id = resp.json()["run_id"]
+    assert app_module.RUNS[run_id]["kind"] == "search"
+    assert "Amsterdam" in app_module.RUNS[run_id]["label"]
+    app_module.RUNS.pop(run_id, None)
+
+
+def test_start_job_search_run_appears_in_runs_endpoint(monkeypatch):
+    monkeypatch.setattr(app_module, "_run_job_search", lambda *a, **kw: None)
+    run_id = client.post("/api/job-search/start", data={"location": "Berlin"}).json()["run_id"]
+    runs = client.get("/api/tailor/runs").json()["runs"]
+    match = [r for r in runs if r["run_id"] == run_id]
+    assert match and match[0]["kind"] == "search"
+    app_module.RUNS.pop(run_id, None)
+
+
+def test_job_leads_endpoints(tmp_path):
+    import db as db_mod
+    db_mod.upsert_job_lead(CURRENT_USER_ID, {"dedup_key": "k3", "company_name": "Acme", "role_name": "Analyst", "url": "https://x/3"})
+    leads = client.get("/api/job-leads").json()["leads"]
+    assert len(leads) == 1
+    lead_id = leads[0]["id"]
+    assert client.post(f"/api/job-leads/{lead_id}/dismiss").status_code == 200
+    assert client.get("/api/job-leads").json()["leads"] == []
+    assert client.post("/api/job-leads/99999/dismiss").status_code == 404
