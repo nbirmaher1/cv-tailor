@@ -415,6 +415,10 @@ function onRunDone(runId, status, err) {
 async function openRun(runId) {
   const r = runs[runId];
   if (!r) return;
+  // The drawer lives on the tailor screen, so make sure it's the visible screen (the run may
+  // have been opened from the dock while on another tab). showScreen fires screen:shown, which
+  // closes any open drawer -- so set openRunId AFTER, then slide the drawer in.
+  showScreen('app');
   openRunId = runId;
   r.seen = true;
   currentRunId = runId;
@@ -630,6 +634,9 @@ async function rebuildRunsFromServer() {
 
 document.addEventListener('screen:shown', (e) => {
   if (!e.detail || e.detail.name === 'login' || e.detail.name === 'register') return;
+  // Any navigation closes an open run drawer (openRun re-opens it right after showing the app
+  // screen). Keeps the drawer from lingering over an unrelated screen.
+  closeDrawer();
   rebuildRunsFromServer();
   if (e.detail.name === 'app') {
     loadFieldMemory();

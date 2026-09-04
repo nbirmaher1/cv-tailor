@@ -646,8 +646,10 @@
     <p class="text-center text-xs text-zinc-300 dark:text-zinc-600 mt-8">cv-tailor · powered by Claude</p>
   </main>
 
-  <!-- RUN DOCK (bottom-right): a live wheel per background run; the header expands it into a
-       full list of all runs with per-run actions. Rebuilt from /api/tailor/runs. -->
+  </div><!-- /app screen -->
+
+  <!-- RUN DOCK + TOASTS live at the top level (not inside any data-screen) so the background
+       run indicators stay visible on every tab, not just the tailor screen. -->
   <div id="run-dock" class="hidden fixed bottom-4 right-4 z-30 w-72 max-w-[calc(100vw-2rem)]">
     <div id="run-dock-list" class="hidden mb-2 max-h-80 overflow-y-auto rounded-xl bg-white dark:bg-zinc-900 shadow-2xl ring-1 ring-zinc-900/5 dark:ring-white/10 divide-y divide-zinc-100 dark:divide-zinc-800"></div>
     <button type="button" id="run-dock-toggle" class="w-full flex items-center justify-between gap-2 rounded-xl bg-white dark:bg-zinc-900 shadow-lg ring-1 ring-zinc-900/5 dark:ring-white/10 px-4 py-2.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
@@ -658,8 +660,6 @@
 
   <!-- TOASTS: non-interrupting completion/started notices -->
   <div id="toast-container" class="fixed top-4 right-4 z-[60] flex flex-col gap-2 items-end pointer-events-none"></div>
-
-  </div><!-- /app screen -->
 
 <script src="/static/js/common.js"></script>
 <script src="/static/js/tailor.js"></script>
