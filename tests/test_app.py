@@ -29,6 +29,16 @@ def _isolate_runs_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _clear_runs():
+    # RUNS is a module-global keyed by run_id; the isolated per-test DB restarts user ids at
+    # 1, so leftover entries from a prior test would otherwise leak into list endpoints
+    # (/runs, /resumable) for the current test's user. Clear it around every test.
+    app_module.RUNS.clear()
+    yield
+    app_module.RUNS.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_db(tmp_path, monkeypatch):
     # Redirect the account/session DB into a fresh temp file per test so tests
     # never touch the project's real data/cvtailor.db.
@@ -1397,3 +1407,107 @@ def test_start_omits_photo_when_toggle_off(monkeypatch):
     })
     assert resp.status_code == 200
     assert "Do not include a photo" in captured["prompt"]
+
+
+# -- concurrency cap + /runs listing ---------------------------------------------------
+
+import threading as _threading
+
+
+def test_run_claude_gate_queues_beyond_capacity(monkeypatch):
+    # With a 1-slot semaphore, the second run must wait (queued) while the first holds it.
+    monkeypatch.setattr(app_module, "_run_semaphore", _threading.Semaphore(1))
+    started = _threading.Event()
+    release = _threading.Event()
+    inner_calls = []
+
+    def fake_inner(run_id, *a, **kw):
+        inner_calls.append(run_id)
+        started.set()
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(app_module, "_run_claude_inner", fake_inner)
+    app_module.RUNS["g1"] = {"cancelled": False, "queued": False, "percent": 0, "step": ""}
+    app_module.RUNS["g2"] = {"cancelled": False, "queued": False, "percent": 0, "step": ""}
+
+    t1 = _threading.Thread(target=app_module._run_claude, args=("g1", "p", None, {}), daemon=True)
+    t1.start()
+    started.wait(timeout=5)  # g1 grabbed the only slot and entered inner
+    t2 = _threading.Thread(target=app_module._run_claude, args=("g2", "p", None, {}), daemon=True)
+    t2.start()
+    for _ in range(100):
+        if app_module.RUNS["g2"]["queued"]:
+            break
+        time.sleep(0.02)
+
+    assert app_module.RUNS["g2"]["queued"] is True   # queued behind the full slot
+    assert inner_calls == ["g1"]                       # g2 hasn't started
+
+    release.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+    assert set(inner_calls) == {"g1", "g2"}            # g2 ran once the slot freed
+    app_module.RUNS.pop("g1", None)
+    app_module.RUNS.pop("g2", None)
+
+
+def test_run_claude_gate_cancel_while_queued_never_runs(monkeypatch):
+    monkeypatch.setattr(app_module, "_run_semaphore", _threading.Semaphore(1))
+    release = _threading.Event()
+    inner_calls = []
+
+    def fake_inner(run_id, *a, **kw):
+        inner_calls.append(run_id)
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(app_module, "_run_claude_inner", fake_inner)
+    app_module.RUNS["h1"] = {"cancelled": False, "queued": False, "percent": 0, "step": ""}
+    app_module.RUNS["h2"] = {"cancelled": False, "queued": False, "percent": 0, "step": ""}
+
+    t1 = _threading.Thread(target=app_module._run_claude, args=("h1", "p", None, {}), daemon=True)
+    t1.start()
+    for _ in range(100):
+        if "h1" in inner_calls:
+            break
+        time.sleep(0.02)
+    t2 = _threading.Thread(target=app_module._run_claude, args=("h2", "p", None, {}), daemon=True)
+    t2.start()
+    for _ in range(100):
+        if app_module.RUNS["h2"]["queued"]:
+            break
+        time.sleep(0.02)
+
+    app_module.RUNS["h2"]["cancelled"] = True  # cancel while queued
+    t2.join(timeout=5)
+    assert "h2" not in inner_calls  # never started Claude
+
+    release.set()
+    t1.join(timeout=5)
+    app_module.RUNS.pop("h1", None)
+    app_module.RUNS.pop("h2", None)
+
+
+def test_status_includes_queued_flag(tmp_path):
+    app_module.RUNS["q-run"] = {
+        "user_id": CURRENT_USER_ID, "step": "Waiting…", "percent": 0, "done": False,
+        "error": None, "queued": True, "run_dir": tmp_path, "output_format": "pdf",
+        "download_name": "cv", "cover_letter_file": None,
+    }
+    resp = client.get("/api/tailor/q-run/status")
+    assert resp.status_code == 200
+    assert resp.json()["queued"] is True
+    app_module.RUNS.pop("q-run", None)
+
+
+def test_runs_endpoint_lists_active_and_resumable_only(tmp_path):
+    app_module.RUNS["a-run"] = {"user_id": CURRENT_USER_ID, "done": False, "resumable": False, "run_dir": tmp_path}
+    app_module.RUNS["r-run"] = {"user_id": CURRENT_USER_ID, "done": True, "resumable": True, "error": "e", "run_dir": tmp_path}
+    app_module.RUNS["done-run"] = {"user_id": CURRENT_USER_ID, "done": True, "resumable": False, "run_dir": tmp_path}
+    app_module.RUNS["other-user"] = {"user_id": CURRENT_USER_ID + 999, "done": False, "resumable": False, "run_dir": tmp_path}
+
+    resp = client.get("/api/tailor/runs")
+    assert resp.status_code == 200
+    ids = {r["run_id"] for r in resp.json()["runs"]}
+    assert ids == {"a-run", "r-run"}  # active + resumable; excludes finished-successful and other users
+    for k in ("a-run", "r-run", "done-run", "other-user"):
+        app_module.RUNS.pop(k, None)

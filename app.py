@@ -171,6 +171,14 @@ CLAUDE_TIMEOUT_SECONDS = 720
 # many additional cut-then-re-render rounds if it's still over budget.
 MAX_QA_ROUNDS = 2
 
+# How many fresh tailoring runs may execute their Claude draft at once. The user can trigger
+# more in parallel; extras queue (shown as "Waiting…") and start as slots free. Kept modest
+# because each run shells out to `claude -p` on the same subscription, so firing many at once
+# would burn the usage limit and fail as a batch. Revisions/resumes aren't gated (cheap,
+# user-initiated one at a time).
+MAX_CONCURRENT_RUNS = 3
+_run_semaphore = threading.Semaphore(MAX_CONCURRENT_RUNS)
+
 EM_DASH = "—"
 
 # Deterministic backup for cv-standards.md / cover-letter-standards.md's Voice sections --
@@ -1207,6 +1215,7 @@ explanation to {run_dir / 'error.txt'} instead, and stop."""
         "error": None,
         "error_cause": None,
         "resumable": False,
+        "queued": False,
         "output_file": output_file,
         "output_format": output_format,
         "download_name": download_name,
@@ -1303,6 +1312,7 @@ def tailor_status(run_id: str, user=Depends(auth.get_current_user)):
         "error": run["error"],
         "error_cause": run.get("error_cause"),
         "resumable": run.get("resumable", False),
+        "queued": run.get("queued", False),
         "output_format": run.get("output_format"),
         "download_name": run.get("download_name"),
         "rationale": run.get("rationale"),
@@ -1545,31 +1555,58 @@ def discard_tailor(run_id: str, user=Depends(auth.get_current_user)):
     return {"discarded": True}
 
 
+def _run_summary(run_id: str, run: dict) -> dict:
+    """Compact per-run status for the dock/monitor -- everything the frontend needs to render
+    a chip and its list row without a separate /status call per run."""
+    company = role = None
+    metadata_file = run.get("metadata_file")
+    if metadata_file and metadata_file.exists():
+        try:
+            meta = json.loads(metadata_file.read_text())
+            company = (meta.get("company_name") or "").strip() or None
+            role = (meta.get("role_name") or "").strip() or None
+        except (json.JSONDecodeError, OSError):
+            pass
+    cover_letter_file = run.get("cover_letter_file")
+    return {
+        "run_id": run_id,
+        "company_name": company,
+        "role_name": role,
+        "step": run.get("step"),
+        "percent": run.get("percent", 0),
+        "done": run.get("done", False),
+        "error": run.get("error"),
+        "error_cause": run.get("error_cause"),
+        "resumable": run.get("resumable", False),
+        "queued": run.get("queued", False),
+        "output_format": run.get("output_format"),
+        "download_name": run.get("download_name"),
+        "has_cover_letter": cover_letter_file is not None and getattr(cover_letter_file, "exists", lambda: False)(),
+        "application": run.get("application"),
+    }
+
+
+@app.get("/api/tailor/runs")
+def list_runs(user=Depends(auth.get_current_user)):
+    """Every run of the current user that's still worth showing in the dock: in-progress or
+    queued (not done), plus failed/interrupted (resumable). Successful-and-finalized runs are
+    intentionally excluded -- those live in the Tailored CVs / Applications tabs. Used to
+    rebuild the dock after a page reload."""
+    return {"runs": [
+        _run_summary(run_id, run)
+        for run_id, run in list(RUNS.items())
+        if run.get("user_id") == user["id"] and (not run.get("done") or run.get("resumable"))
+    ]}
+
+
 @app.get("/api/tailor/resumable")
 def list_resumable(user=Depends(auth.get_current_user)):
-    """Failed/interrupted runs the current user can resume -- lets the tailor screen surface
-    a run orphaned by a restart (or failed on a usage limit) after a page reload, since the
-    frontend otherwise loses the run_id."""
-    out = []
-    for run_id, run in RUNS.items():
-        if run.get("user_id") != user["id"] or not run.get("resumable"):
-            continue
-        company = role = None
-        metadata_file = run.get("metadata_file")
-        if metadata_file and metadata_file.exists():
-            try:
-                meta = json.loads(metadata_file.read_text())
-                company = (meta.get("company_name") or "").strip() or None
-                role = (meta.get("role_name") or "").strip() or None
-            except (json.JSONDecodeError, OSError):
-                pass
-        out.append({
-            "run_id": run_id,
-            "company_name": company,
-            "role_name": role,
-            "error_cause": run.get("error_cause"),
-        })
-    return {"runs": out}
+    """Failed/interrupted runs the current user can resume (a subset of /runs)."""
+    return {"runs": [
+        _run_summary(run_id, run)
+        for run_id, run in list(RUNS.items())
+        if run.get("user_id") == user["id"] and run.get("resumable")
+    ]}
 
 
 # Ordered so later matches only apply once earlier ones have already been seen once each,
@@ -1622,6 +1659,31 @@ def _fail_run(run_id: str, context: str, resumable: bool = True) -> None:
 
 
 def _run_claude(run_id: str, draft_prompt: str, run_dir: Path, paths: dict, allowed_tools: str = TAILOR_FROM_MASTER_ALLOWED_TOOLS):
+    """Concurrency gate around a fresh tailoring run (see MAX_CONCURRENT_RUNS): the user can
+    trigger runs in parallel, but only this many execute their Claude draft at once so the
+    subscription's usage limit isn't hammered. Marks the run `queued` until a slot frees, then
+    runs the real pipeline. Bails cleanly (without ever starting Claude) if the run is
+    cancelled while still queued."""
+    job = RUNS.get(run_id)
+    if job is None or job.get("cancelled"):
+        return
+    job.update(queued=True, step="Waiting for a free slot…")
+    # Poll-acquire (rather than a blocking acquire) so a cancel while queued breaks the wait.
+    while not _run_semaphore.acquire(timeout=0.5):
+        job = RUNS.get(run_id)
+        if job is None or job.get("cancelled"):
+            return
+    try:
+        job = RUNS.get(run_id)
+        if job is None or job.get("cancelled"):
+            return
+        job.update(queued=False, step="Starting…", percent=max(job.get("percent", 0), 3))
+        _run_claude_inner(run_id, draft_prompt, run_dir, paths, allowed_tools)
+    finally:
+        _run_semaphore.release()
+
+
+def _run_claude_inner(run_id: str, draft_prompt: str, run_dir: Path, paths: dict, allowed_tools: str = TAILOR_FROM_MASTER_ALLOWED_TOOLS):
     """Orchestrates a fresh tailoring run: one Claude call to draft+review (no Bash --
     it only reads/writes files), then a backend-rendered, backend-orchestrated visual-QA/
     cut loop (see _run_render_qa_loop), then the existing move-to-permanent-storage finalize."""

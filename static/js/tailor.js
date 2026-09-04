@@ -28,8 +28,18 @@ const failureCause = document.getElementById('failure-cause');
 const failureResumeBtn = document.getElementById('failure-resume-btn');
 const failureStartOverBtn = document.getElementById('failure-startover-btn');
 const failureDiscardBtn = document.getElementById('failure-discard-btn');
-const resumableBanner = document.getElementById('resumable-banner');
-const resumableList = document.getElementById('resumable-list');
+
+const runDrawer = document.getElementById('run-drawer');
+const runDrawerBackdrop = document.getElementById('run-drawer-backdrop');
+const runDrawerTitle = document.getElementById('run-drawer-title');
+const runDrawerClose = document.getElementById('run-drawer-close');
+const runDock = document.getElementById('run-dock');
+const runDockList = document.getElementById('run-dock-list');
+const runDockToggle = document.getElementById('run-dock-toggle');
+const runDockSummary = document.getElementById('run-dock-summary');
+const runDockCaret = document.getElementById('run-dock-caret');
+const toastContainer = document.getElementById('toast-container');
+
 const progressBar = document.getElementById('progress-bar');
 const progressMessage = document.getElementById('progress-message');
 const cancelBtn = document.getElementById('cancel-btn');
@@ -85,6 +95,19 @@ const MAX_CV_BYTES = 10 * 1024 * 1024;
 const COVER_LETTER_TEMPLATE_DEFAULT_LABEL = "Have a cover letter you've used before? Drop it here to match its style — optional, up to 10 MB";
 
 let selectedCoverLetterTemplate = null;
+
+// Multi-run model: every triggered run is tracked in `runs` and polled in the background
+// (see trackRun) so several can tailor at once. The `current*` variables below are NOT "the
+// one active run" anymore -- they mirror the run currently OPEN in the slide-over drawer
+// (openRunId), so the existing result-view logic (preview/revise/download/apply) keeps
+// working unchanged, just pointed at whichever run the user opened.
+const runs = {};              // runId -> { runId, format, filename, company, role, done, error,
+                              //            errorCause, resumable, queued, percent, step, rationale,
+                              //            application, hasCoverLetter, revisionCount, maxRevisions,
+                              //            seen, pollToken, stopped }
+let openRunId = null;
+let dockExpanded = false;
+
 let currentRunId = null;
 let currentFormat = null;
 let currentFilename = null;
@@ -93,6 +116,8 @@ let cachedDownloads = { cv: null, cover_letter: null };
 let isRevising = false;
 let lastRationale = null;
 let activeDocument = 'cv';
+
+const DISMISSED_KEY = 'cvtailor:dismissedRuns';
 
 function wireDropzone(zoneEl, inputEl, onSelect) {
   zoneEl.addEventListener('click', () => inputEl.click());
@@ -178,13 +203,10 @@ form.addEventListener('submit', async (e) => {
     if (selectedCoverLetterTemplate) formData.append('cover_letter_template', selectedCoverLetterTemplate);
   }
 
-  form.classList.add('hidden');
-  setTailorWide(false);
-  loadingState.classList.remove('hidden');
-  loadingState.classList.add('flex');
-  progressBar.style.width = '3%';
-  progressMessage.textContent = 'Starting…';
-
+  // The run drops to the background immediately: track + poll it, drop a dock chip, toast,
+  // and reset the form so the next CV can be started right away. The form is never replaced
+  // by a loading state -- progress/results live in the dock + drawer.
+  submitBtn.disabled = true;
   try {
     const startResp = await apiFetch('/api/tailor/start', { method: 'POST', body: formData });
     if (!startResp.ok) {
@@ -193,31 +215,92 @@ form.addEventListener('submit', async (e) => {
       throw new Error(detail);
     }
     const { run_id } = await startResp.json();
-    currentRunId = run_id;
-    currentFormat = format;
-    currentFilename = customFilename;
-    cachedDownloads = { cv: null, cover_letter: null };
-    activeDocument = 'cv';
-    isRevising = false;
-
-    currentCancelToken = {};
-    const status = await pollUntilDone(run_id, currentCancelToken);
-    currentCancelToken = null;
-    showSuccess(status, run_id, format);
+    runs[run_id] = {
+      runId: run_id, format, filename: customFilename,
+      company: companyName || null, role: roleName || null,
+      done: false, queued: false, percent: 3, step: 'Starting…',
+      activeDocument: 'cv', seen: false,
+    };
+    trackRun(run_id);
+    renderDock();
+    showToast("Tailoring started — it's running in the background.", { type: 'info' });
+    resetFormForNext();
   } catch (err) {
-    currentCancelToken = null;
-    loadingState.classList.add('hidden');
-    loadingState.classList.remove('flex');
-    if (err.resumable) {
-      showFailure(currentRunId, err.message, err.errorCause);
-    } else {
-      form.classList.remove('hidden');
-      showError(err.message || ('Network error: ' + err));
-    }
+    showError(err.message || ('Network error: ' + err));
   } finally {
     submitBtn.disabled = false;
   }
 });
+
+function resetFormForNext() {
+  // Clear the per-application inputs so the next CV starts fresh, but keep the remembered
+  // field toggles and saved format/cover-letter prefs (those persist across runs).
+  ['job-url', 'job-text', 'file-name', 'company-name', 'role-name', 'notes'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  coverLetterNotesInput.value = '';
+  coverLetterTemplateInput.value = '';
+  selectedCoverLetterTemplate = null;
+  coverLetterTemplateLabel.textContent = COVER_LETTER_TEMPLATE_DEFAULT_LABEL;
+  coverLetterTemplateDropzone.classList.remove('border-solid', 'border-emerald-300');
+  clearError();
+  focusJobField();
+}
+
+// setTailorWide is obsolete now that results live in a fixed-width drawer, not the card.
+setTailorWide = () => {};
+
+// -- Toasts (non-interrupting notices) --------------------------------------------------
+
+function showToast(message, opts = {}) {
+  if (!toastContainer) return;
+  const border = opts.type === 'success' ? 'border-emerald-200 dark:border-emerald-900'
+    : opts.type === 'error' ? 'border-red-200 dark:border-red-900'
+    : 'border-zinc-200 dark:border-zinc-700';
+  const toast = document.createElement('div');
+  toast.className = `pointer-events-auto max-w-xs rounded-xl bg-white dark:bg-zinc-900 shadow-lg ring-1 ring-zinc-900/5 dark:ring-white/10 border ${border} px-4 py-3 text-sm text-zinc-700 dark:text-zinc-200 fade-up`;
+  toast.textContent = message;
+  if (opts.onClick) {
+    toast.classList.add('cursor-pointer');
+    toast.addEventListener('click', () => { opts.onClick(); toast.remove(); });
+  }
+  toastContainer.appendChild(toast);
+  setTimeout(() => {
+    toast.style.transition = 'opacity .3s';
+    toast.style.opacity = '0';
+    setTimeout(() => toast.remove(), 300);
+  }, opts.timeout || 6000);
+}
+
+// -- Slide-over drawer (the opened run's view) -----------------------------------------
+
+function runLabel(r) {
+  if (!r) return 'Tailoring run';
+  if (r.company || r.role) return `${r.company || 'Unknown company'}${r.role ? ' → ' + r.role : ''}`;
+  return 'Tailoring run';
+}
+
+function openDrawer() {
+  runDrawerBackdrop.classList.remove('hidden');
+  runDrawer.classList.remove('translate-x-full');
+}
+function closeDrawer() {
+  runDrawer.classList.add('translate-x-full');
+  runDrawerBackdrop.classList.add('hidden');
+  openRunId = null;
+}
+runDrawerClose.addEventListener('click', closeDrawer);
+runDrawerBackdrop.addEventListener('click', closeDrawer);
+
+function drawerShow(which) {
+  loadingState.classList.toggle('hidden', which !== 'loading');
+  loadingState.classList.toggle('flex', which === 'loading');
+  successState.classList.toggle('hidden', which !== 'success');
+  successState.classList.toggle('flex', which === 'success');
+  failureState.classList.toggle('hidden', which !== 'failure');
+  failureState.classList.toggle('flex', which === 'failure');
+}
 
 function showSuccess(status, runId, format) {
   currentRunId = runId;
@@ -230,45 +313,142 @@ function showSuccess(status, runId, format) {
   renderApplicationStatus(status.application);
   updateDocTabs(status.has_cover_letter);
   renderPreview(runId, format, activeDocument);
-  updateReviseUI(status.revision_count, status.max_revisions);
-
-  loadingState.classList.add('hidden');
-  loadingState.classList.remove('flex');
-  failureState.classList.add('hidden');
-  failureState.classList.remove('flex');
-  successState.classList.remove('hidden');
-  successState.classList.add('flex');
-  setTailorWide(true);
+  updateReviseUI(status.revision_count || 0, status.max_revisions || 3);
+  drawerShow('success');
 }
 
 let failureRunId = null;
 
-function showFailure(runId, message, cause) {
+function showFailure(runId, message, cause, resumable) {
   failureRunId = runId;
+  currentRunId = runId;
   failureMessage.textContent = message || 'Something went wrong';
   failureCause.textContent = cause || '';
   failureCause.classList.toggle('hidden', !cause);
-  form.classList.add('hidden');
-  loadingState.classList.add('hidden');
-  loadingState.classList.remove('flex');
-  successState.classList.add('hidden');
-  successState.classList.remove('flex');
-  setTailorWide(false);
-  failureState.classList.remove('hidden');
-  failureState.classList.add('flex');
+  failureResumeBtn.classList.toggle('hidden', !resumable);
+  drawerShow('failure');
 }
 
-function showLoading(message) {
-  form.classList.add('hidden');
-  failureState.classList.add('hidden');
-  failureState.classList.remove('flex');
-  successState.classList.add('hidden');
-  successState.classList.remove('flex');
-  setTailorWide(false);
-  loadingState.classList.remove('hidden');
-  loadingState.classList.add('flex');
-  progressBar.style.width = '8%';
-  progressMessage.textContent = message || 'Resuming…';
+function showLoading(message, percent) {
+  progressBar.style.width = `${percent || 8}%`;
+  progressMessage.textContent = message || 'Working…';
+  drawerShow('loading');
+}
+
+// -- Multi-run tracking -----------------------------------------------------------------
+
+function applyStatusToRun(runId, s) {
+  const r = runs[runId];
+  if (!r) return;
+  if ('percent' in s) r.percent = s.percent;
+  if ('step' in s) r.step = s.step;
+  if ('done' in s) r.done = s.done;
+  if ('error' in s) r.error = s.error;
+  if ('error_cause' in s) r.errorCause = s.error_cause;
+  if ('resumable' in s) r.resumable = s.resumable;
+  if ('queued' in s) r.queued = s.queued;
+  if ('output_format' in s && s.output_format) r.format = s.output_format;
+  if ('download_name' in s && s.download_name) r.filename = s.download_name;
+  if ('has_cover_letter' in s) r.hasCoverLetter = s.has_cover_letter;
+  if ('application' in s) r.application = s.application;
+  if ('rationale' in s) r.rationale = s.rationale;
+  if ('company_name' in s && s.company_name) r.company = s.company_name;
+  if ('role_name' in s && s.role_name) r.role = s.role_name;
+}
+
+function trackRun(runId) {
+  const token = {};
+  runs[runId].pollToken = token;
+  runs[runId].stopped = false;
+  pollJob(`/api/tailor/${runId}/status`, {
+    cancelToken: token,
+    onProgress: (s) => onRunProgress(runId, s),
+  }).then((s) => onRunDone(runId, s, null))
+    .catch((err) => onRunDone(runId, null, err));
+}
+
+function stopTracking(runId) {
+  const r = runs[runId];
+  if (r && r.pollToken && r.pollToken.interval) clearInterval(r.pollToken.interval);
+  if (r) r.stopped = true;
+}
+
+function onRunProgress(runId, s) {
+  const r = runs[runId];
+  if (!r || r.stopped) return;
+  applyStatusToRun(runId, s);
+  if (openRunId === runId && !s.done) showLoading(s.step, s.percent);
+  renderDock();
+}
+
+function onRunDone(runId, status, err) {
+  const r = runs[runId];
+  if (!r || r.stopped) return;
+  r.stopped = true;
+  r.done = true;
+  if (status && !err) {
+    applyStatusToRun(runId, status);
+    r.error = null;
+    if (openRunId === runId) {
+      currentFilename = status.download_name || r.filename || '';
+      showSuccess(status, runId, status.output_format || r.format);
+      r.seen = true;
+    } else {
+      showToast(`${runLabel(r)} — CV is ready`, { type: 'success', onClick: () => openRun(runId) });
+    }
+  } else {
+    r.error = (err && err.message) || 'Something went wrong.';
+    r.errorCause = err && err.errorCause;
+    r.resumable = !!(err && err.resumable);
+    if (openRunId === runId) {
+      showFailure(runId, r.error, r.errorCause, r.resumable);
+      r.seen = true;
+    } else {
+      showToast(`${runLabel(r)} — run didn't finish`, { type: 'error', onClick: () => openRun(runId) });
+    }
+  }
+  renderDock();
+}
+
+async function openRun(runId) {
+  const r = runs[runId];
+  if (!r) return;
+  openRunId = runId;
+  r.seen = true;
+  currentRunId = runId;
+  currentFormat = r.format;
+  currentFilename = r.filename || '';
+  activeDocument = 'cv';
+  cachedDownloads = { cv: null, cover_letter: null };
+  runDrawerTitle.textContent = runLabel(r);
+  openDrawer();
+  // Immediate view from what we already know, then refresh with a full /status.
+  if (!r.done) showLoading(r.step, r.percent);
+  else if (r.error) showFailure(runId, r.error, r.errorCause, r.resumable);
+  try {
+    const resp = await apiFetch(`/api/tailor/${runId}/status`);
+    if (resp.ok) {
+      const s = await resp.json();
+      applyStatusToRun(runId, s);
+      if (openRunId !== runId) return;
+      if (!s.done) showLoading(s.step, s.percent);
+      else if (s.error) showFailure(runId, s.error, s.error_cause, s.resumable);
+      else {
+        currentFormat = s.output_format || r.format;
+        currentFilename = s.download_name || r.filename || '';
+        showSuccess(s, runId, currentFormat);
+      }
+    }
+  } catch (_) { /* keep the optimistic view */ }
+  renderDock();
+}
+
+async function cancelRun(runId) {
+  try { await apiFetch(`/api/tailor/${runId}/cancel`, { method: 'POST' }); } catch (_) {}
+  stopTracking(runId);
+  delete runs[runId];
+  if (openRunId === runId) closeDrawer();
+  renderDock();
 }
 
 async function resumeRun(runId) {
@@ -280,99 +460,176 @@ async function resumeRun(runId) {
       throw new Error(detail);
     }
   } catch (err) {
-    showFailure(runId, err.message || "Couldn't resume this run.", null);
+    if (openRunId === runId) showFailure(runId, err.message || "Couldn't resume this run.", null, false);
+    else showToast(err.message || "Couldn't resume this run.", { type: 'error' });
     return;
   }
-  showLoading('Resuming…');
-  currentCancelToken = {};
-  try {
-    const status = await pollUntilDone(runId, currentCancelToken);
-    currentCancelToken = null;
-    currentFilename = status.download_name || '';
-    showSuccess(status, runId, status.output_format);
-  } catch (err) {
-    currentCancelToken = null;
-    if (err.resumable) showFailure(runId, err.message, err.errorCause);
-    else { form.classList.remove('hidden'); loadingState.classList.add('hidden'); loadingState.classList.remove('flex'); showError(err.message); }
-  }
+  const r = runs[runId] || (runs[runId] = { runId, format: 'pdf', activeDocument: 'cv' });
+  r.done = false; r.error = null; r.errorCause = null; r.resumable = false; r.stopped = false;
+  r.percent = 8; r.step = 'Resuming…'; r.seen = openRunId === runId;
+  if (openRunId === runId) showLoading('Resuming…', 8);
+  trackRun(runId);
+  renderDock();
 }
 
 async function discardRun(runId) {
   try { await apiFetch(`/api/tailor/${runId}/discard`, { method: 'POST' }); } catch (_) {}
+  stopTracking(runId);
+  addDismissed(runId);
+  delete runs[runId];
+  if (openRunId === runId) closeDrawer();
+  renderDock();
+}
+
+function dismissRun(runId) {
+  stopTracking(runId);
+  addDismissed(runId);
+  delete runs[runId];
+  if (openRunId === runId) closeDrawer();
+  renderDock();
+}
+
+// Dismissed run ids (localStorage) so a reload's /api/tailor/runs rebuild doesn't resurrect
+// a completed/failed run the user already cleared from the dock.
+function getDismissed() {
+  try { return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) || '[]')); } catch (_) { return new Set(); }
+}
+function addDismissed(runId) {
+  const s = getDismissed();
+  s.add(runId);
+  try { localStorage.setItem(DISMISSED_KEY, JSON.stringify([...s])); } catch (_) { /* ignore */ }
 }
 
 failureResumeBtn.addEventListener('click', () => { if (failureRunId) resumeRun(failureRunId); });
-failureDiscardBtn.addEventListener('click', async () => {
-  if (!failureRunId) return;
-  await discardRun(failureRunId);
-  failureRunId = null;
-  failureState.classList.add('hidden');
-  failureState.classList.remove('flex');
-  form.classList.remove('hidden');
-  loadResumableRuns();
-});
-failureStartOverBtn.addEventListener('click', () => {
-  failureRunId = null;
-  failureState.classList.add('hidden');
-  failureState.classList.remove('flex');
-  form.classList.remove('hidden');
-});
+failureDiscardBtn.addEventListener('click', () => { if (failureRunId) discardRun(failureRunId); });
+failureStartOverBtn.addEventListener('click', () => closeDrawer());
 
-// Interrupted/failed runs the user can pick back up (e.g. after a restart or a usage-limit
-// failure) -- surfaced as a banner on the tailor input screen, since a page reload loses
-// the in-memory run_id the poll flow would otherwise use.
-async function loadResumableRuns() {
-  if (!resumableBanner) return;
-  let runs = [];
-  try {
-    const resp = await apiFetch('/api/tailor/resumable');
-    if (resp.ok) runs = (await resp.json()).runs || [];
-  } catch (_) { /* leave the banner hidden on any error */ }
+// -- Run dock (bottom-right) ------------------------------------------------------------
 
-  resumableList.innerHTML = '';
-  resumableBanner.classList.toggle('hidden', runs.length === 0);
-  for (const run of runs) {
-    const row = document.createElement('div');
-    row.className = 'flex items-center justify-between gap-3 text-sm';
-    const label = document.createElement('div');
-    label.className = 'min-w-0';
-    const target = (run.company_name || run.role_name)
-      ? `${run.company_name || 'Unknown company'}${run.role_name ? ' → ' + run.role_name : ''}`
-      : 'A tailoring run';
-    // textContent (not innerHTML) -- company/role come from Claude-derived metadata.
-    const targetEl = document.createElement('p');
-    targetEl.className = 'font-medium text-zinc-700 dark:text-zinc-200 truncate';
-    targetEl.textContent = target;
-    label.appendChild(targetEl);
-    if (run.error_cause) {
-      const causeEl = document.createElement('p');
-      causeEl.className = 'text-xs text-zinc-500 dark:text-zinc-400 truncate';
-      causeEl.textContent = run.error_cause;
-      label.appendChild(causeEl);
-    }
-    const actions = document.createElement('div');
-    actions.className = 'flex items-center gap-2 shrink-0';
-    const resumeBtn = document.createElement('button');
-    resumeBtn.type = 'button';
-    resumeBtn.className = 'rounded-lg bg-accent hover:bg-accent-hover text-white font-medium text-xs px-3 py-1.5 transition-colors';
-    resumeBtn.textContent = 'Resume';
-    resumeBtn.addEventListener('click', () => resumeRun(run.run_id));
-    const discardBtn = document.createElement('button');
-    discardBtn.type = 'button';
-    discardBtn.className = 'text-xs text-zinc-400 hover:text-red-500 transition-colors';
-    discardBtn.textContent = 'Discard';
-    discardBtn.addEventListener('click', async () => { await discardRun(run.run_id); loadResumableRuns(); });
-    actions.appendChild(resumeBtn);
-    actions.appendChild(discardBtn);
-    row.appendChild(label);
-    row.appendChild(actions);
-    resumableList.appendChild(row);
+function runStatusMeta(r) {
+  if (!r.done && r.queued) return { icon: 'queued', text: 'Waiting for a free slot…' };
+  if (!r.done) return { icon: 'spin', text: r.step || 'Tailoring…' };
+  if (r.error) return { icon: r.resumable ? 'warn' : 'fail', text: r.errorCause || r.error || 'Run failed' };
+  return { icon: 'done', text: 'Ready' };
+}
+
+function statusIconEl(icon) {
+  const el = document.createElement('span');
+  el.className = 'shrink-0 inline-flex items-center justify-center w-4 h-4 text-xs';
+  if (icon === 'spin') { el.className += ' rounded-full border-2 border-accent border-t-transparent animate-spin'; }
+  else if (icon === 'queued') { el.textContent = '⏳'; }
+  else if (icon === 'done') { el.textContent = '✓'; el.classList.add('text-emerald-500', 'font-bold'); }
+  else if (icon === 'warn') { el.textContent = '!'; el.classList.add('text-amber-500', 'font-bold'); }
+  else { el.textContent = '✕'; el.classList.add('text-red-500', 'font-bold'); }
+  return el;
+}
+
+function buildDockRow(r) {
+  const row = document.createElement('div');
+  row.className = 'flex items-center gap-2 px-3 py-2.5';
+  const meta = runStatusMeta(r);
+
+  const openArea = document.createElement('button');
+  openArea.type = 'button';
+  openArea.className = 'flex items-center gap-2 min-w-0 flex-1 text-left';
+  openArea.appendChild(statusIconEl(meta.icon));
+  const labels = document.createElement('div');
+  labels.className = 'min-w-0';
+  const title = document.createElement('p');
+  title.className = 'text-sm font-medium text-zinc-700 dark:text-zinc-200 truncate';
+  title.textContent = runLabel(r);
+  const sub = document.createElement('p');
+  sub.className = 'text-xs text-zinc-400 truncate';
+  sub.textContent = meta.text;
+  labels.appendChild(title);
+  labels.appendChild(sub);
+  openArea.appendChild(labels);
+  openArea.addEventListener('click', () => openRun(r.runId));
+  row.appendChild(openArea);
+
+  const actions = document.createElement('div');
+  actions.className = 'flex items-center gap-1.5 shrink-0';
+  const mkBtn = (text, cls, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `text-xs px-2 py-1 rounded-md ${cls} transition-colors`;
+    b.textContent = text;
+    b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+    return b;
+  };
+  if (!r.done) {
+    actions.appendChild(mkBtn('Cancel', 'text-zinc-400 hover:text-red-500', () => cancelRun(r.runId)));
+  } else if (r.error && r.resumable) {
+    actions.appendChild(mkBtn('Resume', 'bg-accent hover:bg-accent-hover text-white', () => resumeRun(r.runId)));
+    actions.appendChild(mkBtn('Discard', 'text-zinc-400 hover:text-red-500', () => discardRun(r.runId)));
+  } else {
+    actions.appendChild(mkBtn('Dismiss', 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300', () => dismissRun(r.runId)));
   }
+  row.appendChild(actions);
+  return row;
+}
+
+function renderDock() {
+  const list = Object.values(runs);
+  runDock.classList.toggle('hidden', list.length === 0);
+  if (list.length === 0) { dockExpanded = false; return; }
+
+  const active = list.filter((r) => !r.done);
+  const doneUnseen = list.filter((r) => r.done && !r.seen).length;
+
+  runDockSummary.innerHTML = '';
+  if (active.length) {
+    runDockSummary.appendChild(statusIconEl('spin'));
+    runDockSummary.appendChild(document.createTextNode(
+      ` ${active.length} tailoring${active.length > 1 ? ' (multiple)' : ''}…`));
+  } else {
+    runDockSummary.appendChild(document.createTextNode(`${list.length} run${list.length > 1 ? 's' : ''}`));
+  }
+  if (doneUnseen) {
+    const badge = document.createElement('span');
+    badge.className = 'ml-1 inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-emerald-500 text-white text-[10px] font-bold';
+    badge.textContent = String(doneUnseen);
+    runDockSummary.appendChild(badge);
+  }
+
+  runDockList.classList.toggle('hidden', !dockExpanded);
+  runDockCaret.classList.toggle('rotate-180', dockExpanded);
+  runDockList.innerHTML = '';
+  // Active first, then done.
+  [...active, ...list.filter((r) => r.done)].forEach((r) => runDockList.appendChild(buildDockRow(r)));
+}
+
+runDockToggle.addEventListener('click', () => { dockExpanded = !dockExpanded; renderDock(); });
+
+// -- Rebuild tracked runs after a page reload ------------------------------------------
+
+async function rebuildRunsFromServer() {
+  let serverRuns = [];
+  try {
+    const resp = await apiFetch('/api/tailor/runs');
+    if (resp.ok) serverRuns = (await resp.json()).runs || [];
+  } catch (_) { return; }
+  const dismissed = getDismissed();
+  for (const s of serverRuns) {
+    if (dismissed.has(s.run_id)) continue;
+    if (runs[s.run_id]) { applyStatusToRun(s.run_id, s); continue; }
+    runs[s.run_id] = {
+      runId: s.run_id, format: s.output_format || 'pdf', filename: s.download_name || '',
+      company: s.company_name || null, role: s.role_name || null,
+      done: s.done, error: s.error, errorCause: s.error_cause, resumable: s.resumable,
+      queued: s.queued, percent: s.percent || 0, step: s.step || '',
+      application: s.application, hasCoverLetter: s.has_cover_letter,
+      activeDocument: 'cv', seen: true, // rebuilt runs start "seen" (no retroactive toast)
+    };
+    if (!s.done) trackRun(s.run_id);
+  }
+  renderDock();
 }
 
 document.addEventListener('screen:shown', (e) => {
-  if (e.detail && e.detail.name === 'app') {
-    loadResumableRuns();
+  if (!e.detail || e.detail.name === 'login' || e.detail.name === 'register') return;
+  rebuildRunsFromServer();
+  if (e.detail.name === 'app') {
     loadFieldMemory();
     restorePrefs();
     focusJobField();
@@ -511,18 +768,18 @@ form.addEventListener('keydown', (e) => {
 });
 
 cancelBtn.addEventListener('click', async () => {
-  if (!currentRunId || !currentCancelToken) return;
-  cancelBtn.disabled = true;
-  const token = currentCancelToken;
-  try {
-    await apiFetch(`/api/tailor/${currentRunId}/cancel`, { method: 'POST' });
-  } catch (_) {}
-  if (token.interval) clearInterval(token.interval);
-  const message = isRevising
-    ? 'Cancelled — kept your previous version.'
-    : 'Cancelled — no changes were made.';
-  if (token.reject) token.reject(new Error(message));
-  cancelBtn.disabled = false;
+  // Inside the drawer's loading view. During a revision, cancel just the revision (keeping
+  // the previous version). Otherwise cancel the whole run shown in the drawer.
+  if (isRevising && currentCancelToken) {
+    cancelBtn.disabled = true;
+    const token = currentCancelToken;
+    try { await apiFetch(`/api/tailor/${currentRunId}/cancel`, { method: 'POST' }); } catch (_) {}
+    if (token.interval) clearInterval(token.interval);
+    if (token.reject) token.reject(new Error('Cancelled — kept your previous version.'));
+    cancelBtn.disabled = false;
+    return;
+  }
+  if (openRunId) cancelRun(openRunId);
 });
 
 reviseBtn.addEventListener('click', async () => {
@@ -720,47 +977,11 @@ function updateReviseUI(revisionCount, maxRevisions) {
   }
 }
 
+// "Tailor another CV" in the drawer's success view: just close the drawer -- the empty form
+// is right there underneath. Refresh field memory since this run is now part of recent history.
 restartBtn.addEventListener('click', () => {
-  successState.classList.add('hidden');
-  successState.classList.remove('flex');
-  form.classList.remove('hidden');
-  setTailorWide(false);
-  loadResumableRuns();
-  form.reset();
-  // form.reset() wiped the dynamic field-memory toggles and the format/cover-letter prefs --
-  // re-render from the (now updated) recent CVs and re-apply saved preferences.
+  closeDrawer();
   loadFieldMemory();
-  restorePrefs();
-  rationaleCard.classList.add('hidden');
-  downloadError.classList.add('hidden');
-  pendingFilingCard.classList.add('hidden');
-  currentPendingId = null;
-
-  coverLetterExtras.classList.add('hidden');
-  coverLetterTemplateInput.value = '';
-  selectedCoverLetterTemplate = null;
-  coverLetterTemplateLabel.textContent = COVER_LETTER_TEMPLATE_DEFAULT_LABEL;
-  coverLetterTemplateDropzone.classList.remove('border-solid', 'border-emerald-300');
-
-  for (const doc of ['cv', 'cover_letter']) {
-    if (cachedDownloads[doc]) URL.revokeObjectURL(cachedDownloads[doc].url);
-  }
-  cachedDownloads = { cv: null, cover_letter: null };
-  activeDocument = 'cv';
-  docTabs.classList.add('hidden');
-  if (previewFrame.src) URL.revokeObjectURL(previewFrame.src);
-  previewFrame.src = '';
-  previewWrap.classList.add('hidden');
-  previewFallback.classList.add('hidden');
-  currentRunId = null;
-  currentFormat = null;
-  currentFilename = null;
-  isRevising = false;
-  lastRationale = null;
-  reviseInput.value = '';
-  reviseInput.disabled = false;
-  reviseBtn.disabled = false;
-  reviseError.classList.add('hidden');
 });
 
 let currentPendingId = null;
