@@ -1275,3 +1275,125 @@ def test_resumable_list_returns_only_own_resumable_runs(tmp_path):
     assert ids == {"mine-r"}
     for k in ("mine-r", "mine-done", "other-r"):
         app_module.RUNS.pop(k, None)
+
+
+# -- recent field memory (short-term "carry over from recent CVs") ----------------------
+
+import os as _os
+
+
+def _write_recent_cv(user_id, name, mtime, **fields):
+    d = app_module.DATA_DIR / "users" / str(user_id) / "applications" / "co" / name / "2026-01-01"
+    d.mkdir(parents=True, exist_ok=True)
+    base = {"full_name": "Jane Doe", "email": "j@x.com"}
+    base.update(fields)
+    p = d / "content.json"
+    p.write_text(json.dumps(base))
+    _os.utime(p, (mtime, mtime))
+    return p
+
+
+def test_field_memory_majority_default_and_most_recent_value():
+    uid = CURRENT_USER_ID
+    # 3 recent CVs: phone in all (newest = the value we expect), work_auth in only 1 (minority).
+    _write_recent_cv(uid, "a", 3000, phone="+31 NEW", work_authorization="visa line")
+    _write_recent_cv(uid, "b", 2000, phone="+31 OLD")
+    _write_recent_cv(uid, "c", 1000, phone="+31 OLDEST")
+
+    mem = {f["field"]: f for f in app_module._recent_field_memory(uid)}
+    assert mem["phone"]["value"] == "+31 NEW"       # newest non-empty value
+    assert mem["phone"]["default_checked"] is True  # 3/3 -> majority
+    assert mem["work_authorization"]["default_checked"] is False  # 1/3 -> minority
+    assert "links" not in mem  # never present -> not suggested
+
+
+def test_field_memory_empty_when_no_history():
+    assert app_module._recent_field_memory(CURRENT_USER_ID) == []
+
+
+def test_field_memory_includes_photo_when_master_photo_exists():
+    uid = CURRENT_USER_ID
+    _write_recent_cv(uid, "a", 3000, phone="+31", photo_path="/somewhere/photo.jpg")
+    # Seed a master photo file.
+    master = routes_master_cv.master_cv_dir(uid)
+    master.mkdir(parents=True, exist_ok=True)
+    (master / "photo.jpeg").write_bytes(b"not-a-real-image")
+
+    mem = {f["field"]: f for f in app_module._recent_field_memory(uid)}
+    assert "photo" in mem
+    assert mem["photo"]["value"] == ""
+    assert mem["photo"]["default_checked"] is True  # 1/1 had a photo
+
+
+def test_field_memory_endpoint_returns_fields():
+    _write_recent_cv(CURRENT_USER_ID, "a", 3000, phone="+31 6 123")
+    resp = client.get("/api/tailor/field-memory")
+    assert resp.status_code == 200
+    fields = {f["field"] for f in resp.json()["fields"]}
+    assert "phone" in fields
+
+
+# -- field-override parsing + prompt directive -----------------------------------------
+
+def test_parse_field_overrides_keeps_known_caps_and_strips():
+    raw = json.dumps([
+        {"field": "phone", "include": True, "value": "  +31 6 999  "},
+        {"field": "work_authorization", "include": False, "value": "x"},
+        {"field": "bogus", "include": True, "value": "nope"},
+    ])
+    parsed = app_module._parse_field_overrides(raw)
+    assert parsed["phone"] == {"include": True, "value": "+31 6 999"}
+    assert parsed["work_authorization"]["include"] is False
+    assert "bogus" not in parsed
+
+
+def test_parse_field_overrides_bad_json_returns_empty():
+    assert app_module._parse_field_overrides("not json") == {}
+    assert app_module._parse_field_overrides("") == {}
+
+
+def test_build_contact_directive_include_and_omit():
+    overrides = {
+        "phone": {"include": True, "value": "+31 6 999"},
+        "location": {"include": False, "value": ""},
+    }
+    directive = app_module._build_contact_directive(overrides)
+    assert '+31 6 999' in directive
+    assert "omit entirely" in directive.lower()
+
+
+def test_start_injects_contact_directive_into_prompt(monkeypatch):
+    captured = {}
+
+    def fake_run_claude(run_id, prompt, run_dir, paths, allowed_tools=app_module.TAILOR_FROM_MASTER_ALLOWED_TOOLS):
+        captured["prompt"] = prompt
+
+    monkeypatch.setattr(app_module, "_run_claude", fake_run_claude)
+    resp = client.post("/api/tailor/start", data={
+        "job_text": "We need a data analyst.",
+        "output_format": "pdf",
+        "field_overrides": json.dumps([{"field": "phone", "include": True, "value": "+31 6 84034767"}]),
+    })
+    assert resp.status_code == 200
+    assert "+31 6 84034767" in captured["prompt"]
+
+
+def test_start_omits_photo_when_toggle_off(monkeypatch):
+    captured = {}
+
+    def fake_run_claude(run_id, prompt, run_dir, paths, allowed_tools=app_module.TAILOR_FROM_MASTER_ALLOWED_TOOLS):
+        captured["prompt"] = prompt
+
+    monkeypatch.setattr(app_module, "_run_claude", fake_run_claude)
+    # Seed a master photo so the "omit" branch is meaningful.
+    master = routes_master_cv.master_cv_dir(CURRENT_USER_ID)
+    master.mkdir(parents=True, exist_ok=True)
+    (master / "photo.jpeg").write_bytes(b"img")
+
+    resp = client.post("/api/tailor/start", data={
+        "job_text": "We need a data analyst.",
+        "output_format": "pdf",
+        "field_overrides": json.dumps([{"field": "photo", "include": False}]),
+    })
+    assert resp.status_code == 200
+    assert "Do not include a photo" in captured["prompt"]

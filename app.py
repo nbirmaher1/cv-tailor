@@ -78,7 +78,20 @@ MAX_NOTES_CHARS = 2_000
 MAX_FEEDBACK_CHARS = 2_000
 MAX_COVER_LETTER_NOTES_CHARS = 2_000
 MAX_REVISIONS = 3
+MAX_FIELD_VALUE_CHARS = 300
 ALLOWED_COVER_LETTER_TEMPLATE_EXTENSIONS = {".pdf", ".docx", ".txt"}
+
+# Optional identity/contact fields the "recent field memory" learns and offers as editable
+# toggles on the tailor form (see _recent_field_memory). Core/derived fields (full_name,
+# email, target_title) are excluded -- those aren't things the candidate re-adds per run.
+# `photo` is special-cased (it has no text value -- it uses the saved master photo file).
+FIELD_MEMORY_SAMPLE_SIZE = 10
+FIELD_MEMORY_FIELDS = [
+    ("phone", "Phone"),
+    ("location", "Location"),
+    ("links", "Links (LinkedIn / GitHub / portfolio)"),
+    ("work_authorization", "Work authorization / visa status"),
+]
 
 FUNNY_ERROR_MESSAGES = [
     "Oopsie doopsie — our AI intern tripped over a semicolon. Mind trying again?",
@@ -840,6 +853,118 @@ def _read_rationale(run_dir: Path) -> Optional[dict]:
     }
 
 
+def _sample_recent_content(user_id: int) -> list[dict]:
+    """The user's most-recent tailored content records (up to FIELD_MEMORY_SAMPLE_SIZE),
+    newest first -- used to learn which optional contact fields they keep including. Reads
+    both filed applications and the pending inbox."""
+    user_root = DATA_DIR / "users" / str(user_id)
+    candidates = list((user_root / "applications").glob("*/*/*/content.json"))
+    candidates += list((user_root / "pending").glob("*/content.json"))
+    candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+
+    records = []
+    for path in candidates[:FIELD_MEMORY_SAMPLE_SIZE]:
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(data, dict):
+            records.append(data)
+    return records
+
+
+def _recent_field_memory(user_id: int) -> list[dict]:
+    """Learns, from the last few tailored CVs, which optional contact fields the candidate
+    keeps including (and their most-recent value), so the tailor form can offer them as
+    pre-checked, editable toggles instead of making the candidate retype them every run.
+    Returns [{field, label, value, default_checked}] -- one entry per field seen in >=1
+    recent run (photo: if a saved master photo exists). Empty when there's no history."""
+    records = _sample_recent_content(user_id)
+    suggestions = []
+
+    for field, label in FIELD_MEMORY_FIELDS:
+        present = [str(r.get(field, "")).strip() for r in records if str(r.get(field, "")).strip()]
+        if not present:
+            continue
+        suggestions.append({
+            "field": field,
+            "label": label,
+            "value": present[0],  # most recent non-empty value (records are newest-first)
+            "default_checked": len(present) * 2 >= len(records),  # majority of the sample
+        })
+
+    # Photo is special: no text value, and it's offered only if the candidate has a saved
+    # master photo to use. Default-checked by the same majority rule over recent runs.
+    if next((master_cv_dir(user_id)).glob("photo.*"), None) is not None:
+        photo_present = sum(1 for r in records if r.get("photo_path"))
+        suggestions.append({
+            "field": "photo",
+            "label": "Include a photo",
+            "value": "",
+            "default_checked": bool(records) and photo_present * 2 >= len(records),
+        })
+
+    return suggestions
+
+
+@app.get("/api/tailor/field-memory")
+def tailor_field_memory(user=Depends(auth.get_current_user)):
+    return {"fields": _recent_field_memory(user["id"])}
+
+
+def _parse_field_overrides(raw: str) -> dict:
+    """Parses the tailor form's field-memory toggles (a JSON list of
+    {field, include, value}) into {field: {"include": bool, "value": str}} for known fields
+    only. Values are the candidate's own CV data (same trust level as `notes`), so they're
+    just length-capped and control-char-stripped, not otherwise validated."""
+    known = {field for field, _ in FIELD_MEMORY_FIELDS} | {"photo"}
+    result: dict = {}
+    if not raw.strip():
+        return result
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return result
+    if not isinstance(data, list):
+        return result
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        field = item.get("field")
+        if field not in known or field in result:
+            continue
+        value = re.sub(r"[\x00-\x1f\x7f]", " ", str(item.get("value", ""))).strip()[:MAX_FIELD_VALUE_CHARS]
+        result[field] = {"include": bool(item.get("include")), "value": value}
+    return result
+
+
+def _build_contact_directive(overrides: dict) -> str:
+    """Turns the parsed field-memory toggles into an explicit prompt directive telling the
+    draft which contact fields to include (with what exact value) or omit -- the mechanism
+    that replaces the candidate re-typing phone/visa/etc. into the notes box every run. Only
+    covers the value fields here; `photo` is handled via photo_line. Empty string when no
+    value-field toggles were provided."""
+    lines = []
+    for field, label in FIELD_MEMORY_FIELDS:
+        override = overrides.get(field)
+        if override is None:
+            continue
+        if override["include"]:
+            if override["value"]:
+                lines.append(f'- {label}: include exactly "{override["value"]}".')
+            else:
+                lines.append(f"- {label}: include (use the value already in the master record).")
+        else:
+            lines.append(f"- {label}: omit entirely -- do not put a {label.lower()} anywhere in the CV.")
+    if not lines:
+        return ""
+    return (
+        "Contact/identity fields for this CV -- set the tailored content record's contact fields to "
+        "match these exactly, overriding the master record where they differ. These are the "
+        "candidate's own current details:\n" + "\n".join(lines)
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return (PROJECT_ROOT / "static" / "index.html").read_text()
@@ -861,6 +986,7 @@ async def start_tailor(
     intelligent_cover_letter: str = Form(default="false"),
     company_name: str = Form(default=""),
     role_name: str = Form(default=""),
+    field_overrides: str = Form(default=""),
     user=Depends(auth.require_master_cv),
 ):
     job_url = job_url.strip()
@@ -875,6 +1001,7 @@ async def start_tailor(
     wants_company_research = wants_cover_letter and intelligent_cover_letter.strip().lower() in ("true", "1", "on", "yes")
     cover_letter_notes = cover_letter_notes.strip()
     download_name = _sanitize_filename(filename)
+    overrides = _parse_field_overrides(field_overrides)
     if not job_url and not job_text:
         raise HTTPException(400, "Provide a job posting URL or pasted job description text.")
     if output_format not in ("pdf", "docx"):
@@ -901,10 +1028,17 @@ async def start_tailor(
     master_dir = master_cv_dir(user["id"])
     master_content_file = master_dir / "content.json"
 
+    # Photo inclusion: the saved master photo is used unless a field-memory toggle explicitly
+    # turned it off for this run. When no photo toggle was sent (older client / no field
+    # memory), keep the prior default of including it if one exists.
     photo_line = ""
     master_photo = next(master_dir.glob("photo.*"), None)
-    if master_photo is not None:
+    photo_override = overrides.get("photo")
+    include_photo = photo_override["include"] if photo_override is not None else True
+    if master_photo is not None and include_photo:
         photo_line = f"Photo to include: {master_photo}"
+    elif master_photo is not None and not include_photo:
+        photo_line = "Do not include a photo in this CV, even though one is on file."
 
     output_file = run_dir / f"output.{output_format}"
     content_file = run_dir / "content.json"
@@ -949,6 +1083,7 @@ plausible-looking company or role name."""
         f"in the output, not just as background context):\n{notes}"
         if notes else ""
     )
+    contact_line = _build_contact_directive(overrides)
 
     cover_letter_block = ""
     cover_letter_content_file = cover_letter_html_file = None
@@ -1035,6 +1170,7 @@ output; do NOT re-read a raw CV file): {master_content_file}
 {job_line}
 {photo_line}
 {notes_line}
+{contact_line}
 Output format: {output_format}
 
 Follow the skill's steps from step 2 through step 5 (get job description, tailor content,

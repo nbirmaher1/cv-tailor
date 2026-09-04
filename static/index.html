@@ -395,9 +395,10 @@
 
         <!-- Job posting -->
         <div>
-          <div class="flex items-center gap-2 mb-3">
+          <div class="flex items-center gap-2 mb-1">
             <label class="text-sm font-semibold text-zinc-900 dark:text-white">Add the job posting</label>
           </div>
+          <p class="text-xs text-zinc-400 mb-3">Give a link <span class="font-medium">or</span> paste the description — whichever's easier.</p>
 
           <input type="text" id="job-url" placeholder="Paste a job posting URL…"
                  class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-3 text-sm placeholder:text-zinc-400 transition-all focus-ring">
@@ -410,19 +411,27 @@
 
           <textarea id="job-text" rows="4" maxlength="50000" placeholder="Paste the full job description here…"
                     class="w-full rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-4 py-3 text-sm placeholder:text-zinc-400 resize-y transition-all focus-ring"></textarea>
-          <p class="text-xs text-zinc-400 mt-1.5">Used if the URL can't be fetched.</p>
+          <p class="text-xs text-zinc-400 mt-1.5">If a link can't be fetched (common on LinkedIn), this is used instead. Provide both and the pasted text becomes a fallback and cross-check. <span class="text-zinc-400">Tip: ⌘/Ctrl + Enter to tailor.</span></p>
         </div>
 
         <!-- More options (collapsible) -->
-        <details class="group rounded-xl border border-zinc-100 dark:border-zinc-800 overflow-hidden">
-          <summary class="flex items-center justify-between cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
-            <span>More options</span>
-            <svg class="w-4 h-4 text-zinc-400 transition-transform duration-200 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+        <details id="more-options" class="group rounded-xl border border-zinc-100 dark:border-zinc-800 overflow-hidden">
+          <summary class="flex items-center justify-between gap-3 cursor-pointer select-none px-4 py-3 text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors">
+            <span class="shrink-0">More options</span>
+            <span id="more-options-summary" class="hidden flex-1 truncate text-right text-xs font-normal text-zinc-400"></span>
+            <svg class="w-4 h-4 shrink-0 text-zinc-400 transition-transform duration-200 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" />
             </svg>
           </summary>
 
           <div class="px-4 pb-5 pt-1 space-y-5 border-t border-zinc-100 dark:border-zinc-800">
+
+            <!-- Remembered fields (populated from recent CVs) -->
+            <div id="field-memory" class="hidden pt-4">
+              <label class="block text-xs font-semibold text-zinc-500 dark:text-zinc-400 mb-1">Carry over from your recent CVs</label>
+              <p class="text-xs text-zinc-400 mb-3">Details you keep adding — checked ones get included. Edit any value inline.</p>
+              <div id="field-memory-list" class="space-y-2.5"></div>
+            </div>
 
             <!-- Output format -->
             <div>

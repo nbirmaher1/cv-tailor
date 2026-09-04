@@ -68,6 +68,11 @@ const coverLetterTemplateDropzone = document.getElementById('cover-letter-templa
 const coverLetterTemplateInput = document.getElementById('cover-letter-template-input');
 const coverLetterTemplateLabel = document.getElementById('cover-letter-template-label');
 
+const moreOptions = document.getElementById('more-options');
+const moreOptionsSummary = document.getElementById('more-options-summary');
+const fieldMemory = document.getElementById('field-memory');
+const fieldMemoryList = document.getElementById('field-memory-list');
+
 const filedStatus = document.getElementById('filed-status');
 const filedApplyToggle = document.getElementById('filed-apply-toggle');
 const pendingFilingCard = document.getElementById('pending-card');
@@ -165,6 +170,7 @@ form.addEventListener('submit', async (e) => {
   formData.append('notes', notes);
   formData.append('company_name', companyName);
   formData.append('role_name', roleName);
+  formData.append('field_overrides', JSON.stringify(collectFieldOverrides()));
   formData.append('include_cover_letter', wantsCoverLetter ? 'true' : 'false');
   if (wantsCoverLetter) {
     formData.append('cover_letter_notes', coverLetterNotesInput.value.trim());
@@ -365,7 +371,143 @@ async function loadResumableRuns() {
 }
 
 document.addEventListener('screen:shown', (e) => {
-  if (e.detail && e.detail.name === 'app') loadResumableRuns();
+  if (e.detail && e.detail.name === 'app') {
+    loadResumableRuns();
+    loadFieldMemory();
+    restorePrefs();
+    focusJobField();
+  }
+});
+
+// -- Remembered field toggles (short-term memory of details you keep adding) ------------
+//
+// Fetched from /api/tailor/field-memory: fields you've included across recent tailored CVs,
+// surfaced as pre-checked, editable toggles at the top of "More options" so you don't retype
+// them. `photo` is a bare checkbox (no value); the rest carry an editable text value.
+
+let fieldMemoryFields = [];
+
+async function loadFieldMemory() {
+  if (!fieldMemory) return;
+  try {
+    const resp = await apiFetch('/api/tailor/field-memory');
+    fieldMemoryFields = resp.ok ? ((await resp.json()).fields || []) : [];
+  } catch (_) {
+    fieldMemoryFields = [];
+  }
+  renderFieldMemory();
+}
+
+function renderFieldMemory() {
+  fieldMemoryList.innerHTML = '';
+  fieldMemory.classList.toggle('hidden', fieldMemoryFields.length === 0);
+  for (const f of fieldMemoryFields) {
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2';
+    row.dataset.field = f.field;
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'field-memory-check w-4 h-4 rounded border-zinc-300 dark:border-zinc-600 text-accent focus:ring-accent focus:ring-offset-0 shrink-0';
+    cb.checked = !!f.default_checked;
+    cb.addEventListener('change', updateMoreOptionsSummary);
+    row.appendChild(cb);
+
+    if (f.field === 'photo') {
+      const label = document.createElement('span');
+      label.className = 'text-sm text-zinc-600 dark:text-zinc-300';
+      label.textContent = f.label;
+      row.appendChild(label);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'text-xs font-medium text-zinc-500 dark:text-zinc-400 w-28 shrink-0';
+      label.textContent = f.label;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'field-memory-value flex-1 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-3 py-1.5 text-sm placeholder:text-zinc-400 focus-ring';
+      input.value = f.value || '';
+      input.maxLength = 300;
+      row.appendChild(label);
+      row.appendChild(input);
+    }
+    fieldMemoryList.appendChild(row);
+  }
+  // Auto-expand More options so remembered items are visible, and refresh the summary line.
+  if (fieldMemoryFields.length && moreOptions) moreOptions.open = true;
+  updateMoreOptionsSummary();
+}
+
+function collectFieldOverrides() {
+  const out = [];
+  if (!fieldMemoryList) return out;
+  for (const row of fieldMemoryList.querySelectorAll('[data-field]')) {
+    const field = row.dataset.field;
+    const include = row.querySelector('.field-memory-check')?.checked || false;
+    const valueEl = row.querySelector('.field-memory-value');
+    out.push({ field, include, value: valueEl ? valueEl.value.trim() : '' });
+  }
+  return out;
+}
+
+function updateMoreOptionsSummary() {
+  if (!moreOptionsSummary) return;
+  const checkedLabels = fieldMemoryFields
+    .filter((f) => {
+      const row = fieldMemoryList.querySelector(`[data-field="${f.field}"]`);
+      return row && row.querySelector('.field-memory-check')?.checked;
+    })
+    .map((f) => (f.field === 'photo' ? 'photo' : f.label.split(' (')[0].split(' / ')[0].toLowerCase()));
+  const text = checkedLabels.length ? `Including: ${checkedLabels.join(', ')}` : '';
+  moreOptionsSummary.textContent = text;
+  // Visible only when collapsed and there's something to show.
+  moreOptionsSummary.classList.toggle('hidden', !text || (moreOptions && moreOptions.open));
+}
+
+if (moreOptions) {
+  moreOptions.addEventListener('toggle', updateMoreOptionsSummary);
+}
+
+// -- Remembered format + cover-letter preferences (localStorage) ------------------------
+
+const PREFS_KEY = 'cvtailor:prefs';
+
+function restorePrefs() {
+  let prefs = {};
+  try { prefs = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}'); } catch (_) { prefs = {}; }
+  if (prefs.format === 'pdf' || prefs.format === 'docx') {
+    const radio = document.querySelector(`input[name=format][value="${prefs.format}"]`);
+    if (radio) radio.checked = true;
+  }
+  if (typeof prefs.coverLetter === 'boolean') {
+    coverLetterCheckbox.checked = prefs.coverLetter;
+    coverLetterExtras.classList.toggle('hidden', !prefs.coverLetter);
+  }
+}
+
+function savePrefs() {
+  const format = document.querySelector('input[name=format]:checked')?.value || 'pdf';
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ format, coverLetter: coverLetterCheckbox.checked }));
+  } catch (_) { /* storage disabled -- prefs just won't persist */ }
+}
+
+document.querySelectorAll('input[name=format]').forEach((r) => r.addEventListener('change', savePrefs));
+coverLetterCheckbox.addEventListener('change', savePrefs);
+
+// -- Auto-focus + keyboard submit ------------------------------------------------------
+
+function focusJobField() {
+  const jobUrl = document.getElementById('job-url');
+  if (jobUrl && !form.classList.contains('hidden')) {
+    try { jobUrl.focus(); } catch (_) { /* ignore */ }
+  }
+}
+
+form.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+    e.preventDefault();
+    if (!submitBtn.disabled) form.requestSubmit();
+  }
 });
 
 cancelBtn.addEventListener('click', async () => {
@@ -585,6 +727,10 @@ restartBtn.addEventListener('click', () => {
   setTailorWide(false);
   loadResumableRuns();
   form.reset();
+  // form.reset() wiped the dynamic field-memory toggles and the format/cover-letter prefs --
+  // re-render from the (now updated) recent CVs and re-apply saved preferences.
+  loadFieldMemory();
+  restorePrefs();
   rationaleCard.classList.add('hidden');
   downloadError.classList.add('hidden');
   pendingFilingCard.classList.add('hidden');
