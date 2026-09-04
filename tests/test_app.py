@@ -1511,3 +1511,88 @@ def test_runs_endpoint_lists_active_and_resumable_only(tmp_path):
     assert ids == {"a-run", "r-run"}  # active + resumable; excludes finished-successful and other users
     for k in ("a-run", "r-run", "done-run", "other-user"):
         app_module.RUNS.pop(k, None)
+
+
+# -- _ensure_summary_report (restore the requirement checklist on resume) ---------------
+
+def _make_summary_paths(run_dir, with_requirements=None):
+    content_file = run_dir / "content.json"
+    content_file.write_text(json.dumps({"summary": "x", "experience": []}))
+    summary_file = run_dir / "summary.json"
+    if with_requirements is not None:
+        summary_file.write_text(json.dumps({"summary": "s", "changes": [], "requirements": with_requirements}))
+    return {"content_file": content_file, "summary_file": summary_file, "output_format": "pdf"}
+
+
+def test_ensure_summary_report_noop_when_requirements_present(tmp_path, monkeypatch):
+    paths = _make_summary_paths(tmp_path, with_requirements=[{"name": "SQL", "status": "matched"}])
+    app_module.RUNS["s1"] = {"job_text": "Need SQL.", "percent": 50}
+
+    def fail(*a, **kw):
+        raise AssertionError("no Claude call when the summary already has requirements")
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fail)
+    assert app_module._ensure_summary_report("s1", tmp_path, paths) is True
+    app_module.RUNS.pop("s1", None)
+
+
+def test_ensure_summary_report_noop_when_no_content(tmp_path, monkeypatch):
+    summary_file = tmp_path / "summary.json"  # no content.json
+    paths = {"content_file": tmp_path / "content.json", "summary_file": summary_file, "output_format": "pdf"}
+    app_module.RUNS["s2"] = {"job_text": "Need SQL."}
+
+    def fail(*a, **kw):
+        raise AssertionError("no Claude call when there's no content record to base a report on")
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fail)
+    assert app_module._ensure_summary_report("s2", tmp_path, paths) is True
+    app_module.RUNS.pop("s2", None)
+
+
+def test_ensure_summary_report_regenerates_when_missing(tmp_path, monkeypatch):
+    paths = _make_summary_paths(tmp_path, with_requirements=None)  # summary.json absent
+    app_module.RUNS["s3"] = {"job_text": "Need SQL and Python.", "percent": 50, "cancelled": False}
+
+    calls = {"n": 0}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        calls["n"] += 1
+        (tmp_path / "summary.json").write_text(json.dumps({
+            "summary": "regen", "changes": [], "requirements": [{"name": "SQL", "status": "matched"}],
+        }))
+        return True, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+    assert app_module._ensure_summary_report("s3", tmp_path, paths) is True
+    assert calls["n"] == 1
+    assert app_module._summary_has_requirements(paths["summary_file"]) is True
+    app_module.RUNS.pop("s3", None)
+
+
+def test_ensure_summary_report_best_effort_on_failure(tmp_path, monkeypatch):
+    paths = _make_summary_paths(tmp_path, with_requirements=[])  # present but empty
+    app_module.RUNS["s4"] = {"job_text": "Need SQL.", "percent": 50, "cancelled": False}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        jobs[job_id].update(done=True, error="boom")  # run_single_call marks errored on failure
+        return False, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+    # Best-effort: still returns True (proceed) and clears the errored state.
+    assert app_module._ensure_summary_report("s4", tmp_path, paths) is True
+    assert app_module.RUNS["s4"]["done"] is False
+    assert app_module.RUNS["s4"]["error"] is None
+    app_module.RUNS.pop("s4", None)
+
+
+def test_ensure_summary_report_stops_when_cancelled(tmp_path, monkeypatch):
+    paths = _make_summary_paths(tmp_path, with_requirements=[])
+    app_module.RUNS["s5"] = {"job_text": "Need SQL.", "percent": 50, "cancelled": False}
+
+    def fake_run_single_call(job_id, cmd, project_root, run_dir, on_event, jobs, timeout_seconds=None, fail_messages=None):
+        jobs[job_id]["cancelled"] = True
+        return False, ""
+
+    monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
+    assert app_module._ensure_summary_report("s5", tmp_path, paths) is False
+    app_module.RUNS.pop("s5", None)

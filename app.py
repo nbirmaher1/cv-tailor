@@ -1748,6 +1748,87 @@ def _run_claude_inner(run_id: str, draft_prompt: str, run_dir: Path, paths: dict
     _run_post_draft_phases(run_id, run_dir, paths, start_phase=run_state.PHASE_DRAFTED, finalize=True)
 
 
+def _summary_has_requirements(summary_file: Path) -> bool:
+    try:
+        data = json.loads(summary_file.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    reqs = data.get("requirements")
+    return isinstance(reqs, list) and len(reqs) > 0
+
+
+def _ensure_summary_report(run_id: str, run_dir: Path, paths: dict) -> bool:
+    """A run whose draft was interrupted after writing content.json but before the step-9
+    report reaches resume/render with a missing (or requirement-less) summary.json -- so the
+    success view loses its 'what changed' summary and requirement-coverage checklist. When
+    that happens, regenerate JUST the step-9 report from the already-tailored content record
+    plus the job posting (a cheap Read/Write call, not the whole draft). A no-op for a normal
+    run whose summary is already complete, so it costs nothing in the common case.
+
+    Best-effort: the report is a nice-to-have, so a failure to regenerate never fails the run
+    (the CV itself is fine). Returns False only if the run was cancelled mid-regeneration."""
+    summary_file = paths.get("summary_file")
+    content_file = paths.get("content_file")
+    if summary_file is None or content_file is None:
+        return True
+    if not content_file.exists() or _summary_has_requirements(summary_file):
+        return True
+
+    job = RUNS.get(run_id, {})
+    job_text = job.get("job_text")
+    job_url = job.get("job_url")
+    if job_url and job_text:
+        jd_line = f"Job posting URL: {job_url}\nPasted job description:\n{job_text}"
+    elif job_url:
+        jd_line = f"Job posting URL: {job_url}"
+    elif job_text:
+        jd_line = f"Job description:\n{job_text}"
+    else:
+        return True  # no job posting on hand to map requirements against -- ship without it
+
+    RUNS[run_id].update(step="Rebuilding the summary…", percent=max(RUNS[run_id].get("percent", 0), 80))
+    # Only re-fetch the posting (WebFetch) when a URL is all we have; otherwise Read/Write only.
+    allowed = "Read Write WebFetch" if (job_url and not job_text) else "Read Write"
+    prompt = f"""The reviewed, already-tailored CV content record is at {content_file}.
+Job posting:
+{jd_line}
+
+Produce the "what changed" report for this CV (it is already tailored -- do not re-tailor or modify
+{content_file} or any other file, and do not render anything). Read {content_file}, extract the job
+posting's 8-10 most critical requirements, and for each decide, from what's actually in the content
+record, whether it is "matched" (demonstrated inside an experience bullet), "listed_only" (present in
+Skills but not demonstrated in a bullet), or "missing" (no material for it).
+
+Write exactly this JSON to {summary_file}:
+{{"summary": "one or two sentence overview of how this CV is tailored to the role", "changes": ["a
+few short bullets a candidate can read describing the tailoring", "..."], "review_note": "",
+"target_pages": 1 or 2, "requirements": [{{"name": "requirement", "status": "matched"|"listed_only"|
+"missing", "evidence": "short excerpt of the bullet that demonstrates it -- omit for listed_only/
+missing"}}, "..."]}}"""
+
+    cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--permission-mode", "bypassPermissions",
+        "--allowedTools", allowed,
+        "--disallowedTools", DISALLOWED_TOOLS,
+        "--add-dir", str(run_dir),
+    ]
+    ok, _ = claude_runner.run_single_call(
+        run_id, cmd, PROJECT_ROOT, run_dir, lambda block: None, RUNS,
+        timeout_seconds=CLAUDE_TIMEOUT_SECONDS, fail_messages=FUNNY_ERROR_MESSAGES,
+    )
+    if not ok:
+        job = RUNS.get(run_id)
+        if job is None or job.get("cancelled"):
+            return False  # genuinely stop -- the run was cancelled
+        # The regen call failed but the CV is fine: clear the errored state run_single_call set
+        # and continue without the checklist rather than failing the whole resume.
+        job.update(done=False, error=None, error_cause=None)
+    return True
+
+
 def _run_post_draft_phases(run_id: str, run_dir: Path, paths: dict, start_phase: str, finalize: bool):
     """Runs the cheap phases after a successful draft -- voice guard, render/QA, and
     (for a fresh run) finalize -- updating run_state after each so a later failure or a
@@ -1761,6 +1842,13 @@ def _run_post_draft_phases(run_id: str, run_dir: Path, paths: dict, start_phase:
     # that folder. Only fresh runs are resumable (revisions are cheap and out of scope here).
     resumable = finalize
     try:
+        # Fresh runs already have a complete step-9 report; a resumed run whose draft was
+        # interrupted before writing it may not -- regenerate it so the success view's
+        # "what changed" + requirement checklist isn't lost. No-op (no Claude call) when the
+        # summary is already complete.
+        if finalize and not _ensure_summary_report(run_id, run_dir, paths):
+            return
+
         if start_idx < order.index(run_state.PHASE_VOICE_CHECKED):
             if not _run_voice_guard(run_id, run_dir, paths):
                 if resumable:
