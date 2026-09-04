@@ -1596,3 +1596,74 @@ def test_ensure_summary_report_stops_when_cancelled(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.claude_runner, "run_single_call", fake_run_single_call)
     assert app_module._ensure_summary_report("s5", tmp_path, paths) is False
     app_module.RUNS.pop("s5", None)
+
+
+# -- remove from applications (/unfile) -------------------------------------------------
+
+def test_delete_application_attempt_removes_app_when_last(tmp_path):
+    import db as db_mod
+    app = db_mod.find_or_create_application(CURRENT_USER_ID, "Acme", "acme", "Analyst", "analyst")
+    att = db_mod.create_application_attempt(app["id"], "pdf", "cv", "some/path", False, "2026-01-01T00:00:00Z")
+
+    result = db_mod.delete_application_attempt(att["id"], CURRENT_USER_ID)
+    assert result["deleted_application"] is True
+    assert db_mod.get_application_attempt(att["id"], CURRENT_USER_ID) is None
+    assert db_mod.find_application_by_id(app["id"], CURRENT_USER_ID) is None
+
+
+def test_delete_application_attempt_keeps_app_when_other_attempts_remain(tmp_path):
+    import db as db_mod
+    app = db_mod.find_or_create_application(CURRENT_USER_ID, "Acme", "acme", "Analyst", "analyst")
+    a1 = db_mod.create_application_attempt(app["id"], "pdf", "cv", "p1", False, "2026-01-01T00:00:00Z")
+    a2 = db_mod.create_application_attempt(app["id"], "pdf", "cv", "p2", False, "2026-01-02T00:00:00Z")
+
+    result = db_mod.delete_application_attempt(a1["id"], CURRENT_USER_ID)
+    assert result["deleted_application"] is False
+    assert db_mod.get_application_attempt(a1["id"], CURRENT_USER_ID) is None
+    assert db_mod.get_application_attempt(a2["id"], CURRENT_USER_ID) is not None
+    assert db_mod.find_application_by_id(app["id"], CURRENT_USER_ID) is not None
+
+
+def test_delete_application_attempt_other_user_returns_none(tmp_path):
+    import db as db_mod
+    app = db_mod.find_or_create_application(CURRENT_USER_ID, "Acme", "acme", "Analyst", "analyst")
+    att = db_mod.create_application_attempt(app["id"], "pdf", "cv", "p", False, "2026-01-01T00:00:00Z")
+    assert db_mod.delete_application_attempt(att["id"], CURRENT_USER_ID + 999) is None
+
+
+def test_unfile_endpoint_removes_and_keeps_files(tmp_path):
+    import db as db_mod
+    # Simulate a filed run: create the app/attempt + a folder under applications/.
+    app = db_mod.find_or_create_application(CURRENT_USER_ID, "Acme", "acme", "Analyst", "analyst")
+    att = db_mod.create_application_attempt(app["id"], "pdf", "cv", "acme/analyst/x", False, "2026-01-01T00:00:00Z")
+    run_dir = app_module.DATA_DIR / "users" / str(CURRENT_USER_ID) / "applications" / "acme" / "analyst" / "x"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "output.pdf").write_bytes(b"%PDF-1.4 fake")
+
+    app_module.RUNS["uf-1"] = {
+        "user_id": CURRENT_USER_ID, "done": True, "error": None, "run_dir": run_dir,
+        "output_file": run_dir / "output.pdf", "cover_letter_file": None, "output_format": "pdf",
+        "application": {"pending": False, "company_name": "Acme", "role_name": "Analyst",
+                        "application_id": app["id"], "attempt_id": att["id"], "is_applied": False},
+    }
+
+    resp = client.post("/api/tailor/uf-1/unfile")
+    assert resp.status_code == 200
+    assert resp.json()["application"]["removed"] is True
+    # DB rows gone.
+    assert db_mod.get_application_attempt(att["id"], CURRENT_USER_ID) is None
+    # Files moved to unfiled/ and still present (downloadable).
+    moved = app_module.DATA_DIR / "users" / str(CURRENT_USER_ID) / "unfiled" / "uf-1" / "output.pdf"
+    assert moved.exists()
+    assert app_module.RUNS["uf-1"]["output_file"] == moved
+    app_module.RUNS.pop("uf-1", None)
+
+
+def test_unfile_endpoint_409_when_not_filed(tmp_path):
+    app_module.RUNS["uf-2"] = {
+        "user_id": CURRENT_USER_ID, "done": True, "run_dir": tmp_path,
+        "application": {"pending": True, "pending_id": 5},
+    }
+    resp = client.post("/api/tailor/uf-2/unfile")
+    assert resp.status_code == 409
+    app_module.RUNS.pop("uf-2", None)

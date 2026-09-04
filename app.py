@@ -1555,6 +1555,46 @@ def discard_tailor(run_id: str, user=Depends(auth.get_current_user)):
     return {"discarded": True}
 
 
+@app.post("/api/tailor/{run_id}/unfile")
+def unfile_tailor(run_id: str, user=Depends(auth.get_current_user)):
+    """'Remove from Applications': a finished run is auto-filed into the user's Applications;
+    this lets them take it back out if they didn't actually want it tracked there. Deletes the
+    application/attempt DB rows and moves the folder out of applications/ into unfiled/ so the
+    tailored CV stays downloadable from the result view -- it's just no longer an application."""
+    run = _own_run_or_404(run_id, user["id"])
+    app_info = run.get("application")
+    if not app_info or app_info.get("pending") or app_info.get("removed") or not app_info.get("attempt_id"):
+        raise HTTPException(409, "This run isn't filed in Applications.")
+
+    result = db.delete_application_attempt(app_info["attempt_id"], user["id"])
+    if result is None:
+        raise HTTPException(404, "That application entry no longer exists.")
+
+    # Keep the files (so the CV is still downloadable here) but move them out of applications/.
+    src = run.get("run_dir") or (RUNS_DIR / run_id)
+    dest = DATA_DIR / "users" / str(user["id"]) / "unfiled" / run_id
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        shutil.move(str(src), str(dest))
+        run["run_dir"] = dest
+        run["output_file"] = dest / run["output_file"].name
+        if run.get("cover_letter_file") is not None:
+            run["cover_letter_file"] = dest / run["cover_letter_file"].name
+    except OSError as exc:
+        # The DB rows are already gone (so it's untracked regardless); if the move fails, just
+        # keep serving downloads from the original location.
+        print(f"[cv-tailor] unfile move failed for {run_id}: {exc}", file=sys.stderr)
+
+    run["application"] = {
+        "removed": True,
+        "company_name": app_info.get("company_name"),
+        "role_name": app_info.get("role_name"),
+    }
+    return {"application": run["application"]}
+
+
 def _run_summary(run_id: str, run: dict) -> dict:
     """Compact per-run status for the dock/monitor -- everything the frontend needs to render
     a chip and its list row without a separate /status call per run."""

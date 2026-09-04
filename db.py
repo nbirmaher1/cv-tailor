@@ -267,6 +267,49 @@ def get_application_attempt(attempt_id: int, user_id: int) -> "sqlite3.Row | Non
         ).fetchone()
 
 
+def delete_application_attempt(attempt_id: int, user_id: int) -> "dict | None":
+    """Ownership-checked removal of a single tailored attempt (used by 'Remove from
+    Applications'). Deletes the attempt row; if it was the application's last attempt, deletes
+    the application and its activities too; otherwise clears the applied marker if it pointed
+    at this attempt. Returns {application_id, folder_path, deleted_application} or None if the
+    attempt doesn't exist / isn't the caller's. Deletes are explicit (not FK-cascade), since
+    SQLite foreign-key enforcement isn't relied on elsewhere here."""
+    with _conn() as conn:
+        row = conn.execute(
+            """SELECT application_attempts.id, application_attempts.application_id,
+                      application_attempts.folder_path
+               FROM application_attempts
+               JOIN applications ON applications.id = application_attempts.application_id
+               WHERE application_attempts.id = ? AND applications.user_id = ?""",
+            (attempt_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        application_id = row["application_id"]
+        folder_path = row["folder_path"]
+        conn.execute("DELETE FROM application_attempts WHERE id = ?", (attempt_id,))
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS n FROM application_attempts WHERE application_id = ?",
+            (application_id,),
+        ).fetchone()["n"]
+        deleted_application = False
+        if remaining == 0:
+            conn.execute("DELETE FROM application_activities WHERE application_id = ?", (application_id,))
+            conn.execute("DELETE FROM applications WHERE id = ?", (application_id,))
+            deleted_application = True
+        else:
+            conn.execute(
+                "UPDATE applications SET applied_attempt_id = NULL, applied_at = NULL "
+                "WHERE id = ? AND applied_attempt_id = ?",
+                (application_id, attempt_id),
+            )
+        return {
+            "application_id": application_id,
+            "folder_path": folder_path,
+            "deleted_application": deleted_application,
+        }
+
+
 def find_application_by_id(application_id: int, user_id: int) -> "sqlite3.Row | None":
     """Ownership-checked lookup by primary key."""
     with _conn() as conn:

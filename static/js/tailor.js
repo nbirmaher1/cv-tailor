@@ -85,6 +85,8 @@ const fieldMemoryList = document.getElementById('field-memory-list');
 
 const filedStatus = document.getElementById('filed-status');
 const filedApplyToggle = document.getElementById('filed-apply-toggle');
+const filedRemoveBtn = document.getElementById('filed-remove-btn');
+const filedRemoveError = document.getElementById('filed-remove-error');
 const pendingFilingCard = document.getElementById('pending-card');
 const pendingCompanyInput = document.getElementById('pending-company-input');
 const pendingRoleInput = document.getElementById('pending-role-input');
@@ -1000,9 +1002,15 @@ function renderApplicationStatus(application) {
   filedApplyToggle.innerHTML = '';
   currentPendingId = null;
   pendingError.classList.add('hidden');
+  if (filedRemoveBtn) filedRemoveBtn.classList.add('hidden');
+  if (filedRemoveError) filedRemoveError.classList.add('hidden');
 
   if (!application) {
     filedStatus.textContent = 'Rewritten and reformatted for the role you targeted.';
+    return;
+  }
+  if (application.removed) {
+    filedStatus.textContent = `Removed from Applications${application.company_name ? ` (${application.company_name})` : ''} — still downloadable below.`;
     return;
   }
   if (application.pending) {
@@ -1013,9 +1021,33 @@ function renderApplicationStatus(application) {
     pendingFilingCard.classList.remove('hidden');
     return;
   }
-  filedStatus.textContent = `Saved to ${application.company_name} → ${application.role_name} — ${formatDate(application.created_at)}`;
+  // Auto-filed into Applications -- say so clearly, and offer to take it back out.
+  filedStatus.textContent = `Saved to Applications: ${application.company_name} → ${application.role_name} — ${formatDate(application.created_at)}`;
   renderApplyToggle(application);
+  if (filedRemoveBtn) filedRemoveBtn.classList.remove('hidden');
 }
+
+filedRemoveBtn && filedRemoveBtn.addEventListener('click', async () => {
+  if (!openRunId) return;
+  filedRemoveError.classList.add('hidden');
+  filedRemoveBtn.disabled = true;
+  try {
+    const resp = await apiFetch(`/api/tailor/${openRunId}/unfile`, { method: 'POST' });
+    if (!resp.ok) {
+      let detail = "Couldn't remove it from Applications.";
+      try { detail = (await resp.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    const data = await resp.json();
+    if (runs[openRunId]) runs[openRunId].application = data.application;
+    renderApplicationStatus(data.application);
+  } catch (err) {
+    filedRemoveError.textContent = err.message || "Couldn't remove it from Applications.";
+    filedRemoveError.classList.remove('hidden');
+  } finally {
+    filedRemoveBtn.disabled = false;
+  }
+});
 
 pendingSaveBtn.addEventListener('click', async () => {
   if (!currentPendingId) return;
