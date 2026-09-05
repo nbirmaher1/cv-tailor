@@ -165,6 +165,14 @@ QA_ALLOWED_TOOLS = "Read Write"
 # undiscoverable, not just unlisted). Never remove this without re-verifying that finding.
 DISALLOWED_TOOLS = "Bash"
 
+# The CV-tailoring pipeline is pinned to Opus rather than inheriting the machine's account-default
+# model, so output quality never silently depends on whatever a given user set as their CLI default.
+# Tailoring is judgment-heavy -- the draft, the independent review subagent, and the voice guard that
+# catch fabricated or inflated claims are exactly where the strongest model pays off. Using the
+# "opus" alias (not a pinned version like claude-opus-4-8) means this tracks new Opus releases
+# automatically. Job search sets its model where it's launched; this constant governs tailoring only.
+TAILOR_MODEL = "opus"
+
 # The job-search helper needs the web tools (discovery + authoritative verification) plus the
 # review subagent; still no Bash. See .claude/skills/job-search/.
 JOB_SEARCH_ALLOWED_TOOLS = "Read Write WebSearch WebFetch Agent"
@@ -688,6 +696,7 @@ def _run_voice_guard(run_id: str, run_dir: Path, paths: dict) -> bool:
 
         cmd = [
             "claude", "-p", prompt,
+            "--model", TAILOR_MODEL,
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", "bypassPermissions",
@@ -762,6 +771,7 @@ def _run_render_qa_loop(run_id: str, run_dir: Path, paths: dict) -> bool:
         cmd = [
             "claude", "-p",
             _qa_prompt(paths, render_result, target_pages, qa_result_file, round_num),
+            "--model", TAILOR_MODEL,
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", "bypassPermissions",
@@ -2058,6 +2068,7 @@ def _run_claude_inner(run_id: str, draft_prompt: str, run_dir: Path, paths: dict
     cut loop (see _run_render_qa_loop), then the existing move-to-permanent-storage finalize."""
     cmd = [
         "claude", "-p", draft_prompt,
+        "--model", TAILOR_MODEL,
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
@@ -2177,6 +2188,7 @@ missing"}}, "..."]}}"""
 
     cmd = [
         "claude", "-p", prompt,
+        "--model", TAILOR_MODEL,
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
@@ -2295,6 +2307,7 @@ def _run_revision_inner(run_id: str, edit_prompt: str, run_dir: Path, paths: dic
 
     cmd = [
         "claude", "-p", edit_prompt,
+        "--model", TAILOR_MODEL,
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
